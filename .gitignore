@@ -1,0 +1,6 @@
+/target/
+/.anchor/
+/.DS_Store
+*.keypair.json
+*.secret.json
+/backend/node_modules/

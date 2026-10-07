@@ -1,0 +1,15 @@
+[toolchain]
+anchor_version = "1.0.2"
+
+[features]
+resolution = true
+skip-lint = false
+
+[programs.devnet]
+mercury = "34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"
+
+[hooks]
