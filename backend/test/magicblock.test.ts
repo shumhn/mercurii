@@ -46,13 +46,18 @@ test("rejects a private receive routed to another PER validator", async () => {
   const company = Keypair.generate().publicKey.toBase58();
   const expectedValidator = Keypair.generate().publicKey.toBase58();
   const otherValidator = Keypair.generate().publicKey.toBase58();
+  let sent: Record<string, unknown> = {};
   await assert.rejects(() => preparePrivateReceive({
     payer, company, amountMicro: 1, expectedValidator,
-    fetchImpl: async () => new Response(JSON.stringify({
-      kind: "transfer", transactionBase64: "AQID", sendTo: "base", requiredSigners: [payer],
-      validator: otherValidator,
-    }), { status: 200 }),
+    fetchImpl: async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        kind: "transfer", transactionBase64: "AQID", sendTo: "base", requiredSigners: [payer],
+        validator: otherValidator,
+      }), { status: 200 });
+    },
   }), /different PER validator/);
+  assert.equal(sent.validator, expectedValidator);
 });
 
 test("recipient withdrawal is owner-signed and pinned to the company PER validator", async () => {

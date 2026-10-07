@@ -71,6 +71,7 @@ export async function preparePrivateReceive(args: {
       fromBalance: "base",
       toBalance: "ephemeral",
       cluster,
+      ...(args.expectedValidator ? { validator: asAddress(args.expectedValidator, "expectedValidator") } : {}),
       initIfMissing: true,
       initAtasIfMissing: true,
       initVaultIfMissing: true,
