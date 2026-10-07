@@ -1,0 +1,26 @@
+{
+  "name": "mercury-backend",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --experimental-strip-types src/server.ts",
+    "devnet:policy": "node --experimental-strip-types scripts/devnet-policy-lifecycle.ts",
+    "devnet:verify": "node --experimental-strip-types scripts/verify-devnet-proof.ts",
+    "devnet:snapshot": "node --experimental-strip-types scripts/devnet-snapshot-lifecycle.ts",
+    "devnet:replay": "node --experimental-strip-types scripts/devnet-replay-check.ts",
+    "devnet:recipient-withdraw": "node --experimental-strip-types scripts/devnet-recipient-withdraw.ts",
+    "devnet:recipient-balance": "node --experimental-strip-types scripts/devnet-recipient-balance.ts",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.32.1",
+    "@magicblock-labs/ephemeral-rollups-sdk": "^0.16.2",
+    "@solana/web3.js": "1.98.4",
+    "tweetnacl": "^1.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}
