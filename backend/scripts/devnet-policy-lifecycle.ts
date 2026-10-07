@@ -56,6 +56,14 @@ async function main(): Promise<void> {
   const outsider = loadKey("MERCURY_OUTSIDER_KEYPAIR");
   const agent = loadKey("MERCURY_AGENT_KEYPAIR");
   const programId = new PublicKey(idl.address);
+  const requestAmountMicro = Number(process.env.MERCURY_TEST_PAYMENT_MICRO ?? "1000000");
+  if (!Number.isSafeInteger(requestAmountMicro) || requestAmountMicro <= 0) {
+    throw new Error("MERCURY_TEST_PAYMENT_MICRO must be a positive safe integer");
+  }
+  const requestIdText = process.env.MERCURY_TEST_REQUEST_ID ?? "1";
+  if (!/^\d+$/.test(requestIdText) || BigInt(requestIdText) > (1n << 64n) - 1n) {
+    throw new Error("MERCURY_TEST_REQUEST_ID must be a u64 decimal integer");
+  }
   const [policy] = PublicKey.findProgramAddressSync(
     [Buffer.from("company-policy"), founder.publicKey.toBuffer()], programId,
   );
@@ -115,14 +123,16 @@ async function main(): Promise<void> {
     const signature = await erProvider.sendAndConfirm(transaction, [], { skipPreflight: true, commitment: "confirmed" });
     process.stdout.write(`activate_privacy: ${signature}\n`);
   }
-  const transaction = await erProgram.methods.configureLimits(new anchor.BN(100_000_000), new anchor.BN(10_000_000))
-    .accountsPartial({ founder: founder.publicKey, policy }).transaction();
-  transaction.recentBlockhash = (await er.getLatestBlockhash()).blockhash;
-  transaction.feePayer = founder.publicKey;
-  const signature = await erProvider.sendAndConfirm(transaction, [], { skipPreflight: true, commitment: "confirmed" });
-  process.stdout.write(`configure_limits: ${signature}\n`);
-
-  const authorized = await (erProgram.account as any).companyPolicy.fetch(policy);
+  let authorized = await (erProgram.account as any).companyPolicy.fetch(policy);
+  if (authorized.monthlyLimitMicro.toString() !== "100000000" || authorized.agentCapMicro.toString() !== "10000000") {
+    const transaction = await erProgram.methods.configureLimits(new anchor.BN(100_000_000), new anchor.BN(10_000_000))
+      .accountsPartial({ founder: founder.publicKey, policy }).transaction();
+    transaction.recentBlockhash = (await er.getLatestBlockhash()).blockhash;
+    transaction.feePayer = founder.publicKey;
+    const signature = await erProvider.sendAndConfirm(transaction, [], { skipPreflight: true, commitment: "confirmed" });
+    process.stdout.write(`configure_limits: ${signature}\n`);
+    authorized = await (erProgram.account as any).companyPolicy.fetch(policy);
+  }
   assert.equal(authorized.monthlyLimitMicro.toString(), "100000000");
   const outsiderEr = await teeConnection(resolvedEndpoint, outsider);
   let outsiderBlocked = false;
@@ -134,7 +144,7 @@ async function main(): Promise<void> {
   assert.equal(outsiderBlocked, true, "outsider could read the private policy");
   process.stdout.write(`PASS: private policy ${policy.toBase58()} readable by Founder and denied to outsider\n`);
 
-  const requestId = new anchor.BN(1);
+  const requestId = new anchor.BN(requestIdText);
   const [request] = PublicKey.findProgramAddressSync([
     Buffer.from("payment-request"), policy.toBuffer(), founder.publicKey.toBuffer(), requestId.toArrayLike(Buffer, "le", 8),
   ], programId);
@@ -169,7 +179,7 @@ async function main(): Promise<void> {
   }
   requestState = await (erProgram.account as any).paymentRequest.fetch(request);
   if (requestState.status === 0) {
-    const tx = await erProgram.methods.submitPayment(finance.publicKey, new anchor.BN(1_000_000))
+    const tx = await erProgram.methods.submitPayment(finance.publicKey, new anchor.BN(requestAmountMicro))
       .accountsPartial({ requester: founder.publicKey, request }).transaction();
     process.stdout.write(`submit_payment: ${await sendEr(erProvider, tx)}\n`);
   }
@@ -183,7 +193,7 @@ async function main(): Promise<void> {
   }
   requestState = await (erProgram.account as any).paymentRequest.fetch(request);
   assert.ok(requestState.status === 2 || requestState.status === 3);
-  assert.equal(requestState.amountMicro.toString(), "1000000");
+  assert.equal(requestState.amountMicro.toString(), String(requestAmountMicro));
   assert.equal((await outsiderEr.getAccountInfo(request)), null, "outsider could read payment request");
   process.stdout.write(`PASS: private payment request ${request.toBase58()} status ${requestState.status}; outsider denied\n`);
 

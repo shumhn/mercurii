@@ -39,7 +39,7 @@ const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.u
 const programId = new PublicKey(idl.address);
 const [snapshot] = PublicKey.findProgramAddressSync([Buffer.from("treasury-snapshot"), company.toBuffer()], programId);
 const permission = permissionPdaFromAccount(snapshot);
-const base = new Connection(BASE_RPC, "confirmed");
+const base = new Connection(process.env.MERCURY_BASE_RPC ?? BASE_RPC, "confirmed");
 const baseProvider = new anchor.AnchorProvider(base, new anchor.Wallet(founder), { commitment: "confirmed" });
 const baseProgram = new anchor.Program(idl, baseProvider);
 
