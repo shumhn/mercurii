@@ -1,0 +1,308 @@
+import { readFileSync } from "node:fs";
+import * as anchor from "@coral-xyz/anchor";
+import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import {
+  EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID,
+  permissionPdaFromAccount,
+} from "@magicblock-labs/ephemeral-rollups-sdk";
+import { asAddress, asMicroAmount } from "./magicblock.ts";
+
+const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
+export const PROGRAM_ID = new PublicKey(idl.address);
+export const BASE_RPC = "https://rpc.magicblock.app/devnet";
+export const TEE_RPC = "https://devnet-tee.magicblock.app";
+export const TEE_VALIDATOR = new PublicKey("MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo");
+
+type BuildInput = Record<string, unknown> & { operation: string; actor: string };
+
+function pub(value: unknown, label: string): PublicKey {
+  return new PublicKey(asAddress(value, label));
+}
+
+function asId(value: unknown): anchor.BN {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) throw new Error("requestId must be a decimal string");
+  const id = BigInt(value);
+  if (id > (1n << 64n) - 1n) throw new Error("requestId exceeds u64");
+  return new anchor.BN(value);
+}
+
+function positiveMicro(value: unknown): anchor.BN {
+  return new anchor.BN(asMicroAmount(value));
+}
+
+function requestAddress(company: PublicKey, requester: PublicKey, id: anchor.BN): PublicKey {
+  return PublicKey.findProgramAddressSync([
+    Buffer.from("payment-request"), company.toBuffer(), requester.toBuffer(), id.toArrayLike(Buffer, "le", 8),
+  ], PROGRAM_ID)[0];
+}
+
+function agentAddress(company: PublicKey, founder: PublicKey, agent: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([
+    Buffer.from("agent-policy"), founder.toBuffer(), company.toBuffer(), agent.toBuffer(),
+  ], PROGRAM_ID)[0];
+}
+
+export function snapshotAddress(company: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync([Buffer.from("treasury-snapshot"), company.toBuffer()], PROGRAM_ID)[0];
+}
+
+async function readPrivateAccount<T>(address: PublicKey, name: string, teeToken: string): Promise<T> {
+  if (!teeToken) throw new Error("TEE auth token required");
+  const endpoint = new URL(TEE_RPC);
+  endpoint.searchParams.set("token", teeToken);
+  const account = await new Connection(endpoint.toString(), "confirmed").getAccountInfo(address);
+  if (!account || !account.owner.equals(PROGRAM_ID)) throw new Error(`Private ${name} unavailable`);
+  return new anchor.BorshAccountsCoder(idl).decode(name, account.data) as T;
+}
+
+export async function readCompanyPolicy(companyAddress: string, teeToken: string): Promise<Record<string, unknown>> {
+  const company = pub(companyAddress, "company");
+  const data = await readPrivateAccount<{
+    founder: PublicKey; finance: PublicKey; mint: PublicKey; private_ready: boolean;
+    monthly_limit_micro: anchor.BN; agent_cap_micro: anchor.BN; period: anchor.BN;
+    spent_micro: anchor.BN; reserved_micro: anchor.BN; version: anchor.BN;
+  }>(company, "CompanyPolicy", teeToken);
+  if (!data.private_ready) throw new Error("Company privacy is not active");
+  return {
+    address: company.toBase58(), founder: data.founder.toBase58(), finance: data.finance.toBase58(),
+    mint: data.mint.toBase58(), monthlyLimitMicro: data.monthly_limit_micro.toString(),
+    agentCapMicro: data.agent_cap_micro.toString(), period: data.period.toString(),
+    spentMicro: data.spent_micro.toString(), reservedMicro: data.reserved_micro.toString(),
+    version: data.version.toString(),
+  };
+}
+
+export async function readPaymentRequest(companyAddress: string, requestAddress: string, teeToken: string): Promise<Record<string, unknown>> {
+  const company = pub(companyAddress, "company");
+  const request = pub(requestAddress, "request");
+  const data = await readPrivateAccount<{
+    company: PublicKey; requester: PublicKey; id: anchor.BN; private_ready: boolean;
+    recipient: PublicKey; amount_micro: anchor.BN; status: number; approved_period: anchor.BN;
+  }>(request, "PaymentRequest", teeToken);
+  if (!data.company.equals(company) || !data.private_ready) throw new Error("Request is not active for this company");
+  return {
+    address: request.toBase58(), requester: data.requester.toBase58(), id: data.id.toString(),
+    recipient: data.recipient.toBase58(), amountMicro: data.amount_micro.toString(),
+    status: ["empty", "submitted", "approved", "executed", "rejected"][data.status] ?? "unknown",
+    approvedPeriod: data.approved_period.toString(),
+  };
+}
+
+export async function readAgentPolicy(companyAddress: string, agentPolicyAddress: string, teeToken: string): Promise<Record<string, unknown>> {
+  const company = pub(companyAddress, "company");
+  const agentPolicy = pub(agentPolicyAddress, "agentPolicy");
+  const data = await readPrivateAccount<{
+    company: PublicKey; founder: PublicKey; finance: PublicKey; agent: PublicKey; mint: PublicKey;
+    private_ready: boolean; revoked: boolean; allowed_recipient: PublicKey;
+    per_payment_cap_micro: anchor.BN; period_cap_micro: anchor.BN; period: anchor.BN; spent_micro: anchor.BN;
+  }>(agentPolicy, "AgentPolicy", teeToken);
+  if (!data.company.equals(company) || !data.private_ready) throw new Error("Agent policy is not active for this company");
+  return {
+    address: agentPolicy.toBase58(), founder: data.founder.toBase58(), finance: data.finance.toBase58(),
+    agent: data.agent.toBase58(), mint: data.mint.toBase58(), revoked: data.revoked,
+    allowedRecipient: data.allowed_recipient.toBase58(),
+    perPaymentCapMicro: data.per_payment_cap_micro.toString(), periodCapMicro: data.period_cap_micro.toString(),
+    period: data.period.toString(), spentMicro: data.spent_micro.toString(),
+  };
+}
+
+export async function readTreasurySnapshot(companyAddress: string, teeToken: string): Promise<{
+  address: string; mint: string; balanceMicro: string; updatedSlot: string;
+}> {
+  const company = pub(companyAddress, "company");
+  const snapshot = snapshotAddress(company);
+  const data = await readPrivateAccount<{
+    company: PublicKey; mint: PublicKey; private_ready: boolean; balance_micro: anchor.BN; updated_slot: anchor.BN;
+  }>(snapshot, "TreasurySnapshot", teeToken);
+  if (!data.company.equals(company) || !data.private_ready || data.updated_slot.isZero()) {
+    throw new Error("Private treasury snapshot has not been synchronized");
+  }
+  return {
+    address: snapshot.toBase58(), mint: data.mint.toBase58(),
+    balanceMicro: data.balance_micro.toString(), updatedSlot: data.updated_slot.toString(),
+  };
+}
+
+function aclAccounts(account: PublicKey): Record<string, PublicKey> {
+  return {
+    permission: permissionPdaFromAccount(account),
+    permissionProgram: PERMISSION_PROGRAM_ID,
+    ephemeralVault: EPHEMERAL_VAULT_ID,
+    magicProgram: MAGIC_PROGRAM_ID,
+  };
+}
+
+const privateOperations = new Set([
+  "initCompanyPermission", "activateCompanyPrivacy", "configureLimits",
+  "initRequestPermission", "activateRequestPrivacy", "submitPayment", "approvePayment", "rejectPayment", "executePayment",
+  "initAgentPermission", "activateAgentPrivacy", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
+  "initSnapshotPermission", "activateSnapshotPrivacy", "syncTreasurySnapshot",
+]);
+
+export async function buildOperation(input: BuildInput, config: {
+  company: string;
+  founder: string;
+  teeToken?: string;
+  baseRpc?: string;
+  teeRpc?: string;
+}): Promise<{ status: "unsigned"; operation: string; transactionBase64: string; requiredSigners: string[]; sendTo: "base" | "ephemeral"; sendRpcEndpoint: string }> {
+  const actor = pub(input.actor, "actor");
+  const company = pub(config.company, "company");
+  const founder = pub(config.founder, "founder");
+  const privateOp = privateOperations.has(input.operation);
+  if (privateOp && !config.teeToken) throw new Error("TEE auth token required for private operation");
+  const endpoint = new URL(privateOp ? (config.teeRpc ?? TEE_RPC) : (config.baseRpc ?? BASE_RPC));
+  if (privateOp) endpoint.searchParams.set("token", config.teeToken!);
+  const connection = new Connection(endpoint.toString(), "confirmed");
+  const readOnlyWallet = {
+    publicKey: actor,
+    signTransaction: async () => { throw new Error("Mercury backend never signs transactions"); },
+    signAllTransactions: async () => { throw new Error("Mercury backend never signs transactions"); },
+  } as unknown as anchor.Wallet;
+  const program = new anchor.Program(idl, new anchor.AnchorProvider(connection, readOnlyWallet, { commitment: "confirmed" }));
+  let tx: Transaction;
+  switch (input.operation) {
+    case "initializeCompany": {
+      if (!actor.equals(founder)) throw new Error("Only the configured founder can initialize this company");
+      const expectedCompany = PublicKey.findProgramAddressSync(
+        [Buffer.from("company-policy"), founder.toBuffer()], PROGRAM_ID,
+      )[0];
+      if (!company.equals(expectedCompany)) throw new Error("Configured company does not match founder policy PDA");
+      tx = await program.methods.initializeCompany(pub(input.finance, "finance"), pub(input.mint, "mint"))
+        .accountsPartial({ founder: actor, policy: company, systemProgram: SystemProgram.programId }).transaction();
+      break;
+    }
+    case "createSnapshotShell": {
+      const snapshot = snapshotAddress(company);
+      tx = await program.methods.createSnapshotShell(company).accountsPartial({
+        founder: actor, snapshot, systemProgram: SystemProgram.programId,
+      }).transaction();
+      break;
+    }
+    case "delegateSnapshot": {
+      const snapshot = snapshotAddress(company);
+      tx = await program.methods.delegateSnapshot(company).accountsPartial({ founder: actor, snapshot, validator: TEE_VALIDATOR }).transaction();
+      break;
+    }
+    case "initSnapshotPermission": {
+      const snapshot = snapshotAddress(company);
+      tx = await program.methods.initSnapshotPermission().accountsPartial({ founder: actor, snapshot, ...aclAccounts(snapshot) }).transaction();
+      break;
+    }
+    case "activateSnapshotPrivacy": {
+      const snapshot = snapshotAddress(company);
+      tx = await program.methods.activateSnapshotPrivacy().accountsPartial({ founder: actor, policy: company, snapshot, ...aclAccounts(snapshot) }).transaction();
+      break;
+    }
+    case "syncTreasurySnapshot": {
+      const snapshot = snapshotAddress(company);
+      tx = await program.methods.syncTreasurySnapshot().accountsPartial({
+        finance: actor, policy: company, snapshot, treasuryToken: pub(input.treasuryToken, "treasuryToken"),
+      }).transaction();
+      break;
+    }
+    case "delegateCompany":
+      tx = await program.methods.delegatePolicy().accountsPartial({ founder: actor, policy: company, validator: TEE_VALIDATOR }).transaction();
+      break;
+    case "initCompanyPermission":
+      tx = await program.methods.initPermission().accountsPartial({ founder: actor, policy: company, ...aclAccounts(company) }).transaction();
+      break;
+    case "activateCompanyPrivacy":
+      tx = await program.methods.activatePrivacy().accountsPartial({ founder: actor, policy: company, ...aclAccounts(company) }).transaction();
+      break;
+    case "configureLimits":
+      tx = await program.methods.configureLimits(positiveMicro(input.monthlyLimitMicro), positiveMicro(input.agentCapMicro))
+        .accountsPartial({ founder: actor, policy: company }).transaction();
+      break;
+    case "createRequestShell": {
+      const id = asId(input.requestId);
+      const request = requestAddress(company, actor, id);
+      tx = await program.methods.createRequestShell(company, id).accountsPartial({ request, requester: actor, systemProgram: SystemProgram.programId }).transaction();
+      break;
+    }
+    case "delegateRequest": {
+      const id = asId(input.requestId);
+      const request = requestAddress(company, actor, id);
+      tx = await program.methods.delegateRequest(company, id).accountsPartial({ request, requester: actor, validator: TEE_VALIDATOR }).transaction();
+      break;
+    }
+    case "initRequestPermission": {
+      const request = pub(input.request, "request");
+      tx = await program.methods.initRequestPermission().accountsPartial({ requester: actor, request, ...aclAccounts(request) }).transaction();
+      break;
+    }
+    case "activateRequestPrivacy": {
+      const request = pub(input.request, "request");
+      tx = await program.methods.activateRequestPrivacy().accountsPartial({ founder: actor, policy: company, request, ...aclAccounts(request) }).transaction();
+      break;
+    }
+    case "submitPayment":
+      tx = await program.methods.submitPayment(pub(input.recipient, "recipient"), positiveMicro(input.amountMicro))
+        .accountsPartial({ requester: actor, request: pub(input.request, "request") }).transaction();
+      break;
+    case "approvePayment":
+    case "rejectPayment":
+      tx = await program.methods[input.operation]().accountsPartial({ finance: actor, policy: company, request: pub(input.request, "request") }).transaction();
+      break;
+    case "executePayment":
+      tx = await program.methods.executePayment().accountsPartial({
+        finance: actor, policy: company, request: pub(input.request, "request"),
+        treasuryToken: pub(input.treasuryToken, "treasuryToken"), recipientToken: pub(input.recipientToken, "recipientToken"),
+        tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+      }).transaction();
+      break;
+    case "createAgentShell": {
+      const agent = pub(input.agent, "agent");
+      const agentPolicy = agentAddress(company, founder, agent);
+      tx = await program.methods.createAgentShell(company, agent).accountsPartial({ founder: actor, agentPolicy, systemProgram: SystemProgram.programId }).transaction();
+      break;
+    }
+    case "delegateAgent": {
+      const agent = pub(input.agent, "agent");
+      const agentPolicy = agentAddress(company, founder, agent);
+      tx = await program.methods.delegateAgent(company, agent).accountsPartial({ founder: actor, agentPolicy, validator: TEE_VALIDATOR }).transaction();
+      break;
+    }
+    case "initAgentPermission": {
+      const agentPolicy = pub(input.agentPolicy, "agentPolicy");
+      tx = await program.methods.initAgentPermission().accountsPartial({ founder: actor, agentPolicy, ...aclAccounts(agentPolicy) }).transaction();
+      break;
+    }
+    case "activateAgentPrivacy":
+    case "revokeAgent": {
+      const agentPolicy = pub(input.agentPolicy, "agentPolicy");
+      tx = await program.methods[input.operation]().accountsPartial({ founder: actor, policy: company, agentPolicy, ...aclAccounts(agentPolicy) }).transaction();
+      break;
+    }
+    case "configureAgent":
+      tx = await program.methods.configureAgent(pub(input.recipient, "recipient"), positiveMicro(input.perPaymentCapMicro), positiveMicro(input.periodCapMicro))
+        .accountsPartial({ founder: actor, agentPolicy: pub(input.agentPolicy, "agentPolicy") }).transaction();
+      break;
+    case "fundAgentFloat":
+    case "reclaimAgentFloat":
+      tx = await program.methods[input.operation](positiveMicro(input.amountMicro)).accountsPartial({
+        finance: actor, policy: company, agentPolicy: pub(input.agentPolicy, "agentPolicy"),
+        treasuryToken: pub(input.treasuryToken, "treasuryToken"), agentFloatToken: pub(input.agentFloatToken, "agentFloatToken"),
+        tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+      }).transaction();
+      break;
+    case "agentPay":
+      tx = await program.methods.agentPay(positiveMicro(input.amountMicro)).accountsPartial({
+        agent: actor, agentPolicy: pub(input.agentPolicy, "agentPolicy"),
+        agentFloatToken: pub(input.agentFloatToken, "agentFloatToken"), recipientToken: pub(input.recipientToken, "recipientToken"),
+        tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+      }).transaction();
+      break;
+    default:
+      throw new Error("Unsupported Mercury operation");
+  }
+  tx.feePayer = actor;
+  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+  return {
+    status: "unsigned", operation: input.operation,
+    transactionBase64: tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64"),
+    requiredSigners: [actor.toBase58()],
+    sendTo: privateOp ? "ephemeral" : "base",
+    sendRpcEndpoint: privateOp ? (config.teeRpc ?? TEE_RPC) : (config.baseRpc ?? BASE_RPC),
+  };
+}
