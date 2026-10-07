@@ -2,14 +2,15 @@
 
 **Date:** 7 October 2026  
 **Target:** Solana Blitz v9 devnet MVP  
-**Status:** Core PER custody, private balance snapshot, payment, and recipient withdrawal proven on devnet with a custom six-decimal test mint; Circle devnet USDC and production controls remain open.  
+**Status:** Core PER custody, private balance snapshot, payment, and recipient withdrawal proven on devnet with a custom six-decimal test mint and Circle devnet USDC; reusable onboarding, reconciliation, and production controls remain open.
+
 **Product:** A private company USDC treasury for small onchain teams. Teams receive, hold, and pay USDC through private routes; people and AI agents act under narrow rules without sharing private keys.
 
 ## Decision
 
 Use a **Mercury Solana program** as the company's smart-account policy and token authority. Delegate its sensitive state to a **MagicBlock Private Ephemeral Rollup (PER)**. Hold operating USDC in a **program-controlled Ephemeral SPL Token (eSPL) account** on the same PER. Receive from a normal wallet through MagicBlock's encrypted-destination `base → ephemeral` private transfer route, and receive from another PER balance by private internal transfer. Execute approved outgoing payments from the company eSPL account to a recipient eSPL account inside the PER. The **Private Payments API** can construct a sender-signed incoming transaction; it is not the authorization layer for company spending.
 
-This is the selected architecture for the devnet MVP. The combined Mercury path was exercised with a custom test mint on the TEE validator: private receive to the off-curve company PDA, a Finance-approved payout, separate Agent float funding and payment, revocation, float reclaim, and an ACL-protected treasury balance snapshot. A duplicate payout simulation returned `WrongStatus`. The same path with Circle devnet USDC has not yet been exercised. The implementation evidence and remaining gates are in [README.md](../README.md).
+This is the selected architecture for the devnet MVP. The combined Mercury path was exercised with a custom test mint on the TEE validator: private receive to the off-curve company PDA, a Finance-approved payout, separate Agent float funding and payment, revocation, float reclaim, and an ACL-protected treasury balance snapshot. A duplicate payout simulation returned `WrongStatus`. The private receive, Finance-approved payout, balance read, and recipient withdrawal path was also exercised with Circle devnet USDC. The Agent path has only been exercised with the custom mint. The implementation evidence and remaining gates are in [README.md](../README.md).
 
 ## What each layer does
 
@@ -37,7 +38,7 @@ The hosted API uses private eSPL/PER infrastructure for payments. Mercury uses a
 
 PER account membership controls reads. The current Mercury program checks wallet signer, role, amount, recipient for Agent payments, current period, available token balance through the token CPI, remaining budget, and request status. Human payment allowlists and approval thresholds are still to be implemented. A PER `AUTHORITY` flag is permission-administration authority, **not** a Finance role.
 
-The recipient balance and withdrawal rights above describe the intended wallet flow. Mercury proves receipt into a pre-onboarded recipient account, TEE-authenticated recipient balance reads with outsider denial, and an unsigned recipient withdrawal builder with a custom-mint devnet proof. The frontend wallet-login flow and Circle USDC run are still open.
+The recipient balance and withdrawal rights above describe the intended wallet flow. Mercury proves receipt into a pre-onboarded recipient account, TEE-authenticated recipient balance reads with outsider denial, and an unsigned recipient withdrawal builder with custom-mint and Circle devnet USDC proofs. The frontend wallet-login flow remains open.
 
 ## Accounts and placement
 
@@ -49,7 +50,7 @@ The recipient balance and withdrawal rights above describe the intended wallet f
 | Company USDC eATA and ER token account | eSPL backing plus Mercury policy PDA as token owner | Funded via Solana/global vault; materialized on the same TEE PER | Private token balance; a PDA cannot use the hosted balance API's wallet login |
 | Treasury snapshot PDA | Mercury program | Founder creates and delegates; Finance syncs from the canonical company token account | PER-private Founder/Finance view of balance and observation slot; manual sync can be stale |
 | Agent float eATA | eSPL program; separate Mercury agent PDA | Funded with a small hard limit from company account | Isolated from the main treasury; agent policy is private |
-| Recipient eATA | eSPL program; employee/contractor/vendor wallet | Initialized/delegated to the same TEE PER before the current Mercury payout | Recipient's TEE token reads their balance; Mercury builds a wallet-signed withdrawal, proven with the custom test mint; a frontend UI remains open |
+| Recipient eATA | eSPL program; employee/contractor/vendor wallet | Initialized/delegated to the same TEE PER before the current Mercury payout | Recipient's TEE token reads their balance; Mercury builds a wallet-signed withdrawal, proven with the custom test mint and Circle devnet USDC; a frontend UI remains open |
 | Payroll run and item state (planned) | Mercury program | One private run approval reserves its total; each employee item executes once from the company treasury | Founder/Finance see the run; an employee sees only their own payment status and balance |
 | Invoice document | Encrypted offchain storage | Uploaded after wallet authentication | Only assigned Finance/agent can decrypt; do not put invoice plaintext on Solana |
 
@@ -58,18 +59,18 @@ All writable accounts used in one payment transaction must be available on the s
 ## Private receive, end to end
 
 1. Mercury publishes a company payment address or payment link whose destination is its vault PDA. It does not require a company private key to receive.
-2. A payer with ordinary Solana tokens requests a `visibility: private`, `fromBalance: base`, `toBalance: ephemeral` transfer to that destination and signs the returned transaction. The hosted builder accepted this with a custom mint, and the later company payout proved the off-curve PDA could spend the credited funds. The base instruction still includes the sender and may expose amount/timing.
-3. The payment lands in the company's private eSPL-backed token balance on PER. The custom-mint prototype proved credit through a successful PDA-signed payout and copied the canonical token balance into a Founder/Finance-only PER snapshot. The snapshot requires a Finance-signed sync and may be stale. An app-level receipt record and automatic reconciliation remain to be built. A source transaction or queue acceptance alone is not sufficient proof of credit.
+2. A payer with ordinary Solana tokens requests a `visibility: private`, `fromBalance: base`, `toBalance: ephemeral` transfer to that destination and signs the returned transaction. The hosted builder accepted this with both a custom mint and Circle devnet USDC, and later company payouts proved the off-curve PDA could spend the credited funds. The base instruction still includes the sender and may expose amount/timing.
+3. The payment lands in the company's private eSPL-backed token balance on PER. Both devnet mint proofs verified credit through successful PDA-signed payouts and copied the canonical token balance into a Founder/Finance-only PER snapshot. The snapshot requires a Finance-signed sync and may be stale. An app-level receipt record and automatic reconciliation remain to be built. A source transaction or queue acceptance alone is not sufficient proof of credit.
 
 For a payer already holding a private eSPL balance on the same PER, an internal PER transfer is the simpler inbound path. The amount and sender of a **base-layer** incoming transaction may remain observable; the product promise is to reduce the public link to the company and keep its operating balance private, not hide every byte of the payer's transaction.
 
 ## Outgoing payment, end to end
 
-1. Founder/Finance sets up the company, token account, and delegated state. They create PER permissions and make each sensitive account private **before writing confidential values**, then fund with the chosen devnet mint. The current live proof used a custom six-decimal test mint; Circle devnet USDC is the next integration test. A direct self-funding deposit on Solana is public.
+1. Founder/Finance sets up the company, token account, and delegated state. They create PER permissions and make each sensitive account private **before writing confidential values**, then fund with the chosen devnet mint. The live proof used both a custom six-decimal test mint and Circle devnet USDC. A direct self-funding deposit on Solana is public.
 2. Requester or agent submits a private payment request to Mercury on PER. The program checks role and request uniqueness.
 3. Finance signs an approval on PER. Mercury checks amount and period budget; it reserves the approved amount so concurrent requests cannot exceed the budget. Human vendor allowlists and approval thresholds remain to be built.
 4. An authorized signer triggers execution. In **one PER transaction**, Mercury checks the approved request again, makes a PDA-signed eSPL transfer to the recipient's PER token account, decrements the budget, and marks the request executed. A failed token CPI must revert the state change.
-5. The employee, contractor, or vendor receives the payment in their own private PER token account. Their wallet authenticates to the TEE for a private balance read. If they want standard Solana USDC, the Private Payments API/SDK builds a withdrawal that **the recipient signs**; the base-layer exit can be visible. Mercury's TEE balance read, unsigned withdrawal builder, and wallet-signed transaction were verified with the custom test mint; the frontend wallet flow and Circle devnet USDC run remain open.
+5. The employee, contractor, or vendor receives the payment in their own private PER token account. Their wallet authenticates to the TEE for a private balance read. If they want standard Solana USDC, the Private Payments API/SDK builds a withdrawal that **the recipient signs**; the base-layer exit can be visible. Mercury's TEE balance read, unsigned withdrawal builder, and wallet-signed transaction were verified with the custom test mint and Circle devnet USDC; the frontend wallet flow remains open.
 
 For the Blitz demo, onboard one recipient to the same PER before the payment. A direct company-treasury-to-base payout is a separate queued path: the hosted API cannot replace Mercury's PDA signature and policy checks. It needs a Mercury program integration, settlement tracking, and privacy validation; none of those are implemented yet. The current backend's Private Payments API integration builds inbound private receive transactions and recipient wallet-signed withdrawals.
 
@@ -112,7 +113,7 @@ No autonomous payroll release, general invoice auto-pay, x402 production integra
 5. Test private receive from an ordinary wallet through the API's `base → ephemeral` route **to the Mercury PDA owner**. Verify the company balance changes, the sender signs without a company key, and public observers cannot recover the company destination from the base transaction.
 6. Test a stalled delegation/recipient setup and show a safe retry without paying twice.
 
-Steps 1, 3, 4, and 5 passed with the custom test mint; payout recipient balance, wallet-signed withdrawal, budget, Agent cap, revocation, float reclaim, and a manually synchronized private treasury balance were verified. A duplicate execution simulation failed with `WrongStatus` and left the recipient balance unchanged. Step 2 still needs the exact Circle devnet USDC mint; step 6 needs broader failure/retry tests. Keep frontend paused until the backend payment and reconciliation paths are dependable.
+Steps 1–5 passed across the custom test mint and Circle devnet USDC proofs: private receive, Finance-approved payout, recipient balance and wallet-signed withdrawal, and manually synchronized private treasury balance were verified with both mints. Agent cap, revocation, float reclaim, and duplicate-execution rejection were verified with the custom mint. Step 6 still needs broader failure/retry tests. Reusable backend onboarding and automatic payment reconciliation remain open before this is a functional team app.
 
 ## Production gates after the hackathon
 
