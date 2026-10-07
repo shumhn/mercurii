@@ -50,6 +50,7 @@ The recipient balance and withdrawal rights above describe the intended wallet f
 | Treasury snapshot PDA | Mercury program | Founder creates and delegates; Finance syncs from the canonical company token account | PER-private Founder/Finance view of balance and observation slot; manual sync can be stale |
 | Agent float eATA | eSPL program; separate Mercury agent PDA | Funded with a small hard limit from company account | Isolated from the main treasury; agent policy is private |
 | Recipient eATA | eSPL program; employee/contractor/vendor wallet | Initialized/delegated to the same TEE PER before the current Mercury payout | Recipient's TEE token reads their balance; Mercury builds a wallet-signed withdrawal, proven with the custom test mint; a frontend UI remains open |
+| Payroll run and item state (planned) | Mercury program | One private run approval reserves its total; each employee item executes once from the company treasury | Founder/Finance see the run; an employee sees only their own payment status and balance |
 | Invoice document | Encrypted offchain storage | Uploaded after wallet authentication | Only assigned Finance/agent can decrypt; do not put invoice plaintext on Solana |
 
 All writable accounts used in one payment transaction must be available on the same PER validator. The client discovers the endpoint from delegation status and does not assume a regional endpoint.
@@ -72,6 +73,14 @@ For a payer already holding a private eSPL balance on the same PER, an internal 
 
 For the Blitz demo, onboard one recipient to the same PER before the payment. A direct company-treasury-to-base payout is a separate queued path: the hosted API cannot replace Mercury's PDA signature and policy checks. It needs a Mercury program integration, settlement tracking, and privacy validation; none of those are implemented yet. The current backend's Private Payments API integration builds inbound private receive transactions and recipient wallet-signed withdrawals.
 
+## Controlled private payroll payouts
+
+Payroll payouts are a core **company treasury workflow**, not a separate HR or tax product. The current contract proves one approved private payment to a recipient; a payroll run with multiple employees is **not implemented yet**.
+
+The MVP payroll flow is: Finance prepares an encrypted employee roster and amounts, Mercury creates a private run with a total and one item per employee, an authorized human approves and reserves the run total, then each item transfers from the company eSPL balance to that employee's private PER balance. Every item has a unique status, so a failed item can be retried without paying completed items again. The run reports paid, pending, and failed amounts; recipients can view their own payment and withdraw with their wallet. Agent automation may prepare a draft or flag errors, but cannot approve or release the payroll run on its own.
+
+For the first functional devnet payroll demo, prove two recipients, one human-approved run, exact balances, and a safe retry of a failed item. Tax withholding, fiat rails, employment compliance, payslips, and autonomous scheduled release are separate later work.
+
 ## Agent boundary
 
 **Locked agent model:** Every agent has a dedicated signing key under a revocable Mercury policy. Its key is never the company vault authority. The current contract implements Execute mode with one approved recipient, a fixed token mint, per-payment maximum, period cap, and separate float **onchain**. Mode selection, program allowlists, expiry, Suggest, and Co-sign remain product work. Founder configures/revokes the policy; Finance funds/reclaims the float. PER access to private state is granted separately and minimally.
@@ -84,7 +93,7 @@ For the Blitz demo, onboard one recipient to the same PER before the payment. A 
 
 The intended first MVP agent is an **invoice/request agent** in Suggest mode. It would extract an amount, recipient, category, and explanation, then submit a request; that worker is not implemented yet. The current contract proves Execute mode with a **small isolated float**: Finance first approves its allocation, then the agent can pay only its preapproved destination within its per-payment and period caps. Co-sign mode is part of the planned permission model. Revocation blocks the next spend, and a lost agent key cannot authorize a transfer from the main treasury.
 
-No autonomous payroll, general auto-pay, x402 production integration, yield, or fiat rails in this MVP. Payroll remains a later batch-payment workflow of the same treasury.
+No autonomous payroll release, general invoice auto-pay, x402 production integration, yield, or fiat rails in this MVP. Human-approved private payroll payouts are in scope as a treasury workflow.
 
 ## Privacy and settlement promises
 

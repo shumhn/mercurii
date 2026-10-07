@@ -21,6 +21,8 @@ The token path has now been exercised end to end on the private devnet ER **with
 
 For employee, contractor, and vendor payouts, the current Mercury program sends to a recipient token account already on the same PER. The recipient can read their own balance through the TEE and build a wallet-signed withdrawal through MagicBlock's Private Payments API. Both recipient operations were verified on devnet with the custom test mint; an outsider was denied the private balance. Circle devnet USDC withdrawal and a frontend wallet-login flow remain untested. Direct company-PDA-to-base payouts through the API remain unimplemented.
 
+This is **not yet a full payroll payout workflow**. It proves one employee payment rail, but has no private employee roster, approved multi-recipient payroll run, per-item retry/status, or payroll reconciliation. A human-approved private payroll run is in the Mercury MVP plan; HR, tax, payslips, and fiat payroll are outside this build.
+
 ## Current backend
 
 `backend/` is a local, noncustodial HTTP service. It has:
@@ -85,7 +87,8 @@ The hosted Private Payments API's private-balance endpoint authenticates the des
 2. Automate company and recipient eSPL token-account onboarding on the selected PER. The current proof used setup scripts and a pre-onboarded recipient; the backend now builds `initializeCompany` but does not yet perform the whole account setup sequence.
 3. Add an app-level payment record and automatic reconciliation for PDA custody so a submitted transaction is not displayed as a completed payment before recipient credit is verified. The current treasury snapshot is manual and can be stale.
 4. Add a recipient/amount allowlist for human payments, approval thresholds, and broader negative tests around every payout route. This devnet proof tested one Finance approval, duplicate execution rejection, a per-payment agent cap, and revocation.
-5. Build the invoice Suggest worker if the demo must show a real AI agent. The contract currently proves only bounded Execute mode from a separate float.
-6. Finish role rotation, request/agent account close and rent recovery, durable recovery, Co-sign mode, and external security review before production use. Resolve dependency advisories before public deployment; the current Anchor JavaScript dependency pulls a vulnerable `toml` package without an available upstream fix.
+5. Build a human-approved private payroll run: private employee items, one run-level budget reservation and approval, individual one-time payouts, and reliable retry/status. The existing contract only proves individual payments.
+6. Build the invoice Suggest worker if the demo must show a real AI agent. The contract currently proves only bounded Execute mode from a separate float.
+7. Finish role rotation, request/agent account close and rent recovery, durable recovery, Co-sign mode, and external security review before production use. Resolve dependency advisories before public deployment; the current Anchor JavaScript dependency pulls a vulnerable `toml` package without an available upstream fix.
 
 Product scope and the provisional payment design are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
