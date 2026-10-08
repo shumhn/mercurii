@@ -15,6 +15,7 @@ import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { bindSignedPayment, getPayment, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
+import { createPayrollRun, getPayrollRun } from "./payroll-run.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
   getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
 import {
@@ -589,6 +590,85 @@ createServer(async (req, res) => {
         request: requestAddress, requester: String(request.requester), requestId: String(request.id) });
       return reply(res, 200, { record: reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
         requestStatus: request.status });
+    }
+    if (req.method === "POST" && req.url === "/v1/payroll-runs") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.requester, "requester") !== founderAddress) throw new Error("Founder must create this MVP payroll run");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      const run = createPayrollRun(body.runId, companyAddress, body);
+      return reply(res, 200, { runId: run.runId, items: run.items.map((item, index) => ({
+        index, paymentId: item.paymentId, request: item.request,
+        next: `/v1/payment-flows/${item.paymentId}/next`,
+      })), approve: `/v1/payroll-runs/${run.runId}/approve`, status: `/v1/payroll-runs/${run.runId}` });
+    }
+    const payrollRun = req.url?.match(/^\/v1\/payroll-runs\/([^/?]+)(?:\/(approve))?$/);
+    if (payrollRun && req.method === "GET" && !payrollRun[2]) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const run = getPayrollRun(payrollRun[1], companyAddress);
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      const items = [];
+      for (const item of run.items) {
+        const inspected = await inspectPaymentFlow(getPaymentFlow(item.paymentId, companyAddress), founderAddress, token);
+        const requestStatus = inspected.observation.status;
+        let payment = null;
+        if (["approved", "executed", "rejected"].includes(requestStatus)) {
+          const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
+            request: item.request, requester: item.requester, requestId: item.requestId });
+          const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
+          payment = reconcilePayment(item.paymentId, companyAddress, requestStatus, chain?.status ?? null);
+        }
+        items.push({ paymentId: item.paymentId, request: item.request, requestStatus,
+          next: `/v1/payment-flows/${item.paymentId}/next`,
+          paymentJob: `/v1/payment-jobs/${item.paymentId}`, paymentState: payment?.state ?? null,
+          signature: payment?.signature ?? null });
+      }
+      return reply(res, 200, { runId: run.runId, items,
+        readyToApprove: items.every((item) => item.requestStatus === "submitted"),
+        settledCount: items.filter((item) => item.paymentState === "settled").length,
+        failedCount: items.filter((item) => item.paymentState === "failed").length });
+    }
+    if (payrollRun && req.method === "POST" && payrollRun[2] === "approve") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      const run = getPayrollRun(payrollRun[1], companyAddress);
+      const statuses = await Promise.all(run.items.map(async (item) =>
+        String((await readPaymentRequest(companyAddress, item.request, token)).status)));
+      if (statuses.every((status) => status === "approved" || status === "executed")) {
+        return reply(res, 200, { status: "ready", runId: run.runId });
+      }
+      if (!statuses.every((status) => status === "submitted")) {
+        throw new Error("Every payroll item must be submitted before one-signature approval");
+      }
+      const previous = latestOnboardingReceipt(companyAddress, run.runId, "payrollApprove");
+      if (previous && (previous.status === "confirmed" ||
+          ((previous.status === "built" || previous.status === "pending") && waitForCleanupReceipt(previous)))) {
+        return reply(res, 200, { status: "wait", receiptId: previous.id, receiptStatus: previous.status });
+      }
+      const approvals = [];
+      for (const item of run.items) {
+        const plan = await approvalPlan(item.request, actor, body.grant, body.parentGrant, token);
+        const transaction = Transaction.from(Buffer.from(plan.transaction.transactionBase64, "base64"));
+        if (transaction.instructions.length !== 1) throw new Error("Unexpected payroll approval instruction count");
+        approvals.push(transaction.instructions[0]!);
+      }
+      const endpoint = new URL(TEE_RPC);
+      endpoint.searchParams.set("token", token);
+      const blockhash = (await new Connection(endpoint.toString(), "confirmed").getLatestBlockhash()).blockhash;
+      const batch = new Transaction({ feePayer: new PublicKey(actor), recentBlockhash: blockhash });
+      for (const instruction of approvals) batch.add(instruction);
+      const transactionBase64 = batch.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+      const receipt = recordOnboardingBuild({ company: companyAddress, target: run.runId,
+        operation: "payrollApprove", chain: "ephemeral", transactionBase64 });
+      return reply(res, 200, { status: "build", runId: run.runId, receiptId: receipt.id,
+        transaction: { status: "unsigned", operation: "approvePayroll", transactionBase64,
+          requiredSigners: [actor], sendTo: "ephemeral", sendRpcEndpoint: TEE_RPC } });
     }
     const paymentFlow = req.url?.match(/^\/v1\/payment-flows\/([^/?]+)(?:\/next)?$/);
     if (paymentFlow && req.method === "GET" && !req.url?.endsWith("/next")) {

@@ -84,11 +84,11 @@ For the Blitz demo, onboard one recipient to the same PER before the payment. Th
 
 ## Controlled private payroll payouts
 
-Payroll payouts are a core **company treasury workflow**, not a separate HR or tax product. The current contract proves one approved private payment to a recipient; a payroll run with multiple employees is **not implemented yet**.
+Payroll payouts are a core **company treasury workflow**, not a separate HR or tax product. The devnet backend now groups two to four existing private PaymentRequests into a run. One wallet signature atomically approves every submitted item; existing contract checks reserve each amount against the company budget within that transaction. Each item is executed and reconciled separately. There is no separate onchain PayrollRun account.
 
-The MVP payroll flow is: Founder or Finance prepares an encrypted employee roster and amounts, Mercury creates a private run with a total and one item per employee, the Founder or an in-scope Finance operator approves and reserves the run total, then each item transfers from the company eSPL balance to that employee's private PER balance. Every item has a unique status, so a failed item can be retried without paying completed items again. The run reports paid, pending, and failed amounts; recipients can view their own payment and withdraw with their wallet. Agent automation may prepare a draft or flag errors, but cannot approve or release the payroll run on its own.
+For the current small-run flow, the Founder keeps the roster and amounts client-side, creates the run, and submits each private request. The Founder or an in-scope Finance operator signs the combined approval. The Founder or Finance then executes each item from the company eSPL balance into the employee's private PER balance. Every item has a unique payment ID and status, so completed items cannot be paid again; a failed item can use the payment-job retry path after reconciliation. The local run journal holds a terms hash and public request identities, not salaries or recipient wallets. Agent automation may prepare a draft or flag errors, but cannot approve or release payroll on its own.
 
-For the first functional devnet payroll demo, prove two recipients, one human-approved run, exact balances, and a safe retry of a failed item. Tax withholding, fiat rails, employment compliance, payslips, and autonomous scheduled release are separate later work.
+The live devnet demo proved two recipients, one combined approval, each private payout reaching `executed`, a `1/2 settled` intermediate state, and a rejected replay of the first settled payout. An induced onchain failed-item recovery and before/after recipient balance proof remain. Tax withholding, fiat rails, employment compliance, payslips, and autonomous scheduled release are separate later work.
 
 ## Agent boundary
 
