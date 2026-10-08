@@ -11,15 +11,13 @@ const requestDiscriminator = Buffer.from(idl.accounts!.find((account) => account
 
 export type ManagerCleanupScan = {
   company: string; manager: string; grant: string;
-  targets: Array<{ address: string; includeFinance: boolean }>;
-  managerOwnedRequests: string[]; untrackedRequests: string[];
+  targets: Array<{ address: string }>;
+  managerOwnedRequests: string[]; historicalResetRequests: string[];
 };
 
-export function managerCleanupReaderPlan(manager: string, recorded: {
-  includeFinance: boolean; manager: string | null;
-} | undefined, financeActive: boolean): { includeFinance: boolean } | null {
-  if (!recorded || recorded.manager !== manager) return null;
-  return { includeFinance: recorded.includeFinance && financeActive };
+export function managerRequestNeedsReset(manager: string, requester: string,
+  recorded: { manager: string | null } | undefined): boolean {
+  return requester === manager || recorded?.manager === manager;
 }
 
 export async function scanManagerReaderCleanup(args: {
@@ -47,7 +45,7 @@ export async function scanManagerReaderCleanup(args: {
   const readers = recordedRequestReaders(company);
   const targets: ManagerCleanupScan["targets"] = [];
   const managerOwnedRequests: string[] = [];
-  const untrackedRequests: string[] = [];
+  const historicalResetRequests: string[] = [];
   let policySeen = false;
   for (const { pubkey, account } of accounts) {
     if (!account.owner.equals(PROGRAM_ID)) continue;
@@ -58,18 +56,20 @@ export async function scanManagerReaderCleanup(args: {
     };
     if (request.company.toBase58() !== company || !request.private_ready) continue;
     const address = pubkey.toBase58();
-    if (request.requester.toBase58() === grant.member) managerOwnedRequests.push(address);
+    const managerOwned = request.requester.toBase58() === grant.member;
+    if (managerOwned) managerOwnedRequests.push(address);
     const recorded = readers.get(address);
     if (!recorded) {
-      untrackedRequests.push(address);
+      historicalResetRequests.push(address);
+      targets.push({ address });
       continue;
     }
-    const plan = managerCleanupReaderPlan(grant.member as string, recorded,
-      parent.active === true && parent.revoked === false);
-    if (plan) targets.push({ address, includeFinance: plan.includeFinance });
+    if (managerRequestNeedsReset(grant.member as string, request.requester.toBase58(), recorded)) {
+      targets.push({ address });
+    }
   }
   if (!policySeen) throw new Error("PER account scan did not include the company policy; cleanup would be incomplete");
   targets.sort((a, b) => a.address.localeCompare(b.address));
   return { company, manager: grant.member as string, grant: grantAddress,
-    targets, managerOwnedRequests, untrackedRequests };
+    targets, managerOwnedRequests, historicalResetRequests };
 }

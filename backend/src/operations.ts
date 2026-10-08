@@ -52,6 +52,20 @@ export function teamGrantAddress(company: PublicKey, grantor: PublicKey, member:
   ], PROGRAM_ID)[0];
 }
 
+export function branchScopeAddress(company: PublicKey, branchId: number): PublicKey {
+  if (!Number.isInteger(branchId) || branchId < 1 || branchId > 0xff_ffff) {
+    throw new Error("branchId must be an integer from 1 to 16777215");
+  }
+  const bytes = Buffer.from([branchId & 255, (branchId >>> 8) & 255, (branchId >>> 16) & 255]);
+  return PublicKey.findProgramAddressSync([Buffer.from("branch-scope"), company.toBuffer(), bytes], PROGRAM_ID)[0];
+}
+
+export function requestBranchScope(company: PublicKey, requestId: string): PublicKey {
+  if (!/^\d+$/.test(requestId)) throw new Error("requestId must be a decimal string");
+  const branchId = Number(BigInt(requestId) >> 40n);
+  return branchScopeAddress(company, branchId);
+}
+
 async function readPrivateAccount<T>(address: PublicKey, name: string, teeToken: string): Promise<T> {
   if (!teeToken) throw new Error("TEE auth token required");
   const endpoint = new URL(TEE_RPC);
@@ -228,8 +242,8 @@ const privateOperations = new Set([
   "initRequestPermission", "activateRequestPrivacy", "submitPayment", "approvePayment", "rejectPayment", "executePayment",
   "initAgentPermission", "activateAgentPrivacy", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
   "initSnapshotPermission", "activateSnapshotPrivacy", "syncTreasurySnapshot",
-  "setSnapshotReaders", "setRequestReaders",
-  "initGrantPermission", "activateRootGrantPrivacy", "activateChildGrantPrivacy", "configureGrant", "revokeGrant",
+  "setSnapshotReaders", "setRequestReaders", "setRequestReadersV2",
+  "initGrantPermission", "activateRootGrantPrivacy", "activateMemberGrantPrivacy", "activateChildGrantPrivacy", "restorePolicyReaders", "configureGrant", "revokeGrant",
 ]);
 
 export async function buildOperation(input: BuildInput, config: {
@@ -350,6 +364,22 @@ export async function buildOperation(input: BuildInput, config: {
       }).transaction();
       break;
     }
+    case "activateMemberGrantPrivacy": {
+      const grant = pub(input.grant, "grant");
+      tx = await program.methods.activateMemberGrantPrivacy().accountsPartial({
+        founder: actor, policy: company, grant, ...aclAccounts(grant),
+        policyPermission: permissionPdaFromAccount(company),
+      }).transaction();
+      break;
+    }
+    case "restorePolicyReaders": {
+      const grant = pub(input.grant, "grant");
+      tx = await program.methods.restorePolicyReaders().accountsPartial({
+        founder: actor, policy: company, grant, ...aclAccounts(grant),
+        policyPermission: permissionPdaFromAccount(company),
+      }).transaction();
+      break;
+    }
     case "activateChildGrantPrivacy": {
       const grant = pub(input.grant, "grant");
       const parent = pub(input.parentGrant, "parentGrant");
@@ -365,11 +395,13 @@ export async function buildOperation(input: BuildInput, config: {
       const parent = input.parentGrant ? pub(input.parentGrant, "parentGrant") : PROGRAM_ID;
       if (!Array.isArray(input.recipients)) throw new Error("recipients must be an array");
       const recipients = input.recipients.map((item) => pub(item, "recipient"));
-      const role = input.role === "finance" ? 1 : input.role === "manager" ? 2 : 0;
-      if (role === 0) throw new Error("role must be finance or manager");
+      const role = input.role === "finance" ? 1 : input.role === "manager" ? 2 :
+        input.role === "requester" ? 3 : input.role === "viewer" ? 4 : 0;
+      if (role === 0) throw new Error("role must be finance, manager, requester, or viewer");
       tx = await program.methods.configureGrant(
         role, input.scope ? pub(input.scope, "scope") : PublicKey.default,
-        positiveMicro(input.perPaymentCapMicro), positiveMicro(input.periodCapMicro),
+        role >= 3 ? new anchor.BN(0) : positiveMicro(input.perPaymentCapMicro),
+        role >= 3 ? new anchor.BN(0) : positiveMicro(input.periodCapMicro),
         recipients, input.mayDelegate === true,
       ).accountsPartial({ grantor: actor, policy: company, grant, parent }).transaction();
       break;
@@ -406,7 +438,9 @@ export async function buildOperation(input: BuildInput, config: {
       tx = await program.methods.activateRequestPrivacy(
         input.includeFinance !== false, input.manager ? pub(input.manager, "manager") : PublicKey.default,
       )
-        .accountsPartial({ founder: actor, policy: company, request, ...aclAccounts(request) }).transaction();
+        .accountsPartial({ founder: actor, policy: company, request,
+          requesterGrant: input.requesterGrant ? pub(input.requesterGrant, "requesterGrant") : PROGRAM_ID,
+          ...aclAccounts(request) }).transaction();
       break;
     }
     case "setRequestReaders": {
@@ -414,12 +448,25 @@ export async function buildOperation(input: BuildInput, config: {
       tx = await program.methods.setRequestReaders(
         input.includeFinance === true,
         input.manager ? pub(input.manager, "manager") : PublicKey.default,
-      ).accountsPartial({ founder: actor, policy: company, request, ...aclAccounts(request) }).transaction();
+      ).accountsPartial({ founder: actor, policy: company, request,
+        requesterGrant: PROGRAM_ID, ...aclAccounts(request) }).transaction();
+      break;
+    }
+    case "setRequestReadersV2": {
+      const request = pub(input.request, "request");
+      tx = await program.methods.setRequestReadersV2(
+        input.includeRequester === true, input.includeFinance === true,
+        input.manager ? pub(input.manager, "manager") : PublicKey.default,
+        input.viewer ? pub(input.viewer, "viewer") : PublicKey.default,
+      ).accountsPartial({ founder: actor, policy: company, request,
+        viewerGrant: input.viewerGrant ? pub(input.viewerGrant, "viewerGrant") : PROGRAM_ID,
+        ...aclAccounts(request) }).transaction();
       break;
     }
     case "submitPayment":
       tx = await program.methods.submitPayment(pub(input.recipient, "recipient"), positiveMicro(input.amountMicro))
-        .accountsPartial({ requester: actor, request: pub(input.request, "request") }).transaction();
+        .accountsPartial({ requester: actor, policy: company, request: pub(input.request, "request"),
+          requesterGrant: input.requesterGrant ? pub(input.requesterGrant, "requesterGrant") : PROGRAM_ID }).transaction();
       break;
     case "approvePayment":
     case "rejectPayment":

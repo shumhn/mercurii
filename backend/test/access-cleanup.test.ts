@@ -1,21 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { financeCleanupReaderPlan } from "../src/finance-cleanup.ts";
-import { managerCleanupReaderPlan } from "../src/manager-cleanup.ts";
+import { financeRequestNeedsReset } from "../src/finance-cleanup.ts";
+import { managerRequestNeedsReset } from "../src/manager-cleanup.ts";
 
-test("Finance revocation preserves the assigned Manager reader", () => {
+test("Finance cleanup includes Finance-owned and explicitly shared requests", () => {
   const recorded = { includeFinance: true, manager: "manager-wallet" };
-  assert.deepEqual(financeCleanupReaderPlan("finance-wallet", "requester-wallet", recorded),
-    { manager: "manager-wallet" });
-  assert.equal(financeCleanupReaderPlan("finance-wallet", "requester-wallet", undefined), null);
-  assert.equal(financeCleanupReaderPlan("finance-wallet", "requester-wallet",
-    { includeFinance: false, manager: null }), null);
+  assert.equal(financeRequestNeedsReset("finance-wallet", "requester-wallet", recorded), true);
+  assert.equal(financeRequestNeedsReset("finance-wallet", "finance-wallet", undefined), true);
+  assert.equal(financeRequestNeedsReset("finance-wallet", "requester-wallet", undefined), false);
+  assert.equal(financeRequestNeedsReset("finance-wallet", "requester-wallet",
+    { includeFinance: false, manager: null }), false);
 });
 
-test("Manager revocation never re-adds a revoked Finance reader", () => {
+test("Manager cleanup includes Manager-owned and explicitly shared requests", () => {
   const recorded = { includeFinance: true, manager: "manager-wallet" };
-  assert.deepEqual(managerCleanupReaderPlan("manager-wallet", recorded, true), { includeFinance: true });
-  assert.deepEqual(managerCleanupReaderPlan("manager-wallet", recorded, false), { includeFinance: false });
-  assert.equal(managerCleanupReaderPlan("other-manager", recorded, true), null);
-  assert.equal(managerCleanupReaderPlan("manager-wallet", undefined, true), null);
+  assert.equal(managerRequestNeedsReset("manager-wallet", "requester-wallet", recorded), true);
+  assert.equal(managerRequestNeedsReset("manager-wallet", "manager-wallet", undefined), true);
+  assert.equal(managerRequestNeedsReset("other-manager", "requester-wallet", recorded), false);
+  assert.equal(managerRequestNeedsReset("manager-wallet", "requester-wallet", undefined), false);
 });

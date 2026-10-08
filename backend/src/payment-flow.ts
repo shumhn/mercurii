@@ -18,12 +18,15 @@ type Flow = {
   paymentId: string; company: string; requester: string; request: string; requestId: string;
   termsHash: string; createdAt: string;
   includeFinance?: boolean; manager?: string | null;
+  branchId?: number | null;
+  includeRequester?: boolean;
 };
 type Journal = { version: 1; flows: Flow[] };
 type RequestData = { company: PublicKey; requester: PublicKey; id: anchor.BN; private_ready: boolean; status: number };
 
 export type PaymentFlowTerms = {
   requester: string; recipient: string; amountMicro: number; includeFinance: boolean; manager: string | null;
+  branchId: number | null;
 };
 export type PaymentFlowObservation = {
   exists: boolean; delegated: boolean; visibleOnTee: boolean; permissionExists: boolean;
@@ -55,11 +58,12 @@ function saveJournal(journal: Journal): void {
   renameSync(temporary, destination);
 }
 
-function requestIdFor(id: string): string {
-  return createHash("sha256").update(`mercury-payment-request:${id}`).digest().readBigUInt64LE(0).toString();
+function requestIdFor(id: string, branchId: number | null): string {
+  const random = createHash("sha256").update(`mercury-payment-request:${id}`).digest().readBigUInt64LE(0);
+  return (((BigInt(branchId ?? 0) << 40n) | (random & ((1n << 40n) - 1n)))).toString();
 }
 
-function normalizedTerms(input: Record<string, unknown>): PaymentFlowTerms {
+function normalizedTerms(input: Record<string, unknown>, legacy = false): PaymentFlowTerms {
   const requester = asAddress(input.requester, "requester");
   const recipient = asAddress(input.recipient, "recipient");
   const amountMicro = asMicroAmount(input.amountMicro);
@@ -69,22 +73,29 @@ function normalizedTerms(input: Record<string, unknown>): PaymentFlowTerms {
   }
   const manager = input.manager === undefined || input.manager === null ? null : asAddress(input.manager, "manager");
   if (manager === requester || manager === recipient) throw new Error("Manager conflicts with the payment request");
-  return { requester, recipient, amountMicro, includeFinance: input.includeFinance !== false, manager };
+  const branchId = input.branchId === undefined || input.branchId === null ? null : input.branchId;
+  if (branchId !== null && (typeof branchId !== "number" || !Number.isInteger(branchId) ||
+      branchId < 1 || branchId > 0xff_ffff)) {
+    throw new Error("branchId must be an integer from 1 to 16777215");
+  }
+  if (manager && branchId === null && !legacy) throw new Error("Manager payments require branchId");
+  return { requester, recipient, amountMicro, includeFinance: input.includeFinance !== false, manager, branchId };
 }
 
 function hashTerms(terms: PaymentFlowTerms): string {
-  return createHash("sha256").update(JSON.stringify(terms)).digest("hex");
+  const { branchId, ...legacyTerms } = terms;
+  return createHash("sha256").update(JSON.stringify(branchId === null ? legacyTerms : terms)).digest("hex");
 }
 
 export function getOrCreatePaymentFlow(paymentIdInput: unknown, companyInput: unknown,
   input: Record<string, unknown>): { flow: Flow; terms: PaymentFlowTerms } {
   const payment = paymentId(paymentIdInput);
   const company = asAddress(companyInput, "company");
-  const terms = normalizedTerms(input);
-  const requestId = requestIdFor(payment);
-  const request = paymentRequestAddress(new PublicKey(company), new PublicKey(terms.requester), new anchor.BN(requestId)).toBase58();
   const journal = readJournal();
   const existing = journal.flows.find((item) => item.paymentId === payment);
+  const terms = normalizedTerms(input, existing !== undefined && existing.branchId === undefined);
+  const requestId = existing?.requestId ?? requestIdFor(payment, terms.branchId);
+  const request = paymentRequestAddress(new PublicKey(company), new PublicKey(terms.requester), new anchor.BN(requestId)).toBase58();
   if (existing) {
     if (existing.company !== company || existing.requester !== terms.requester || existing.request !== request ||
         existing.requestId !== requestId || existing.termsHash !== hashTerms(terms)) {
@@ -102,7 +113,7 @@ export function getOrCreatePaymentFlow(paymentIdInput: unknown, companyInput: un
   }
   const flow: Flow = { paymentId: payment, company, requester: terms.requester, request, requestId,
     termsHash: hashTerms(terms), createdAt: new Date().toISOString(),
-    includeFinance: terms.includeFinance, manager: terms.manager };
+    includeFinance: terms.includeFinance, manager: terms.manager, branchId: terms.branchId };
   journal.flows.push(flow);
   saveJournal(journal);
   return { flow, terms };
@@ -119,14 +130,19 @@ export function recordedRequestReaders(companyInput: unknown): Map<string, {
 }
 
 export function applyConfirmedReaderCleanup(companyInput: unknown, requestInput: unknown,
-  kind: "finance" | "manager"): void {
+  kind: "finance" | "manager" | "all"): void {
   const company = asAddress(companyInput, "company");
   const request = asAddress(requestInput, "request");
   const journal = readJournal();
   const flow = journal.flows.find((item) => item.company === company && item.request === request);
   if (!flow) return;
   if (kind === "finance") flow.includeFinance = false;
-  else flow.manager = null;
+  else if (kind === "manager") flow.manager = null;
+  else {
+    flow.includeFinance = false;
+    flow.manager = null;
+    flow.includeRequester = false;
+  }
   saveJournal(journal);
 }
 

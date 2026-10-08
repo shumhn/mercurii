@@ -17,20 +17,19 @@ const SNAPSHOT = discriminator("TreasurySnapshot");
 const AGENT = discriminator("AgentPolicy");
 const POLICY = discriminator("CompanyPolicy");
 
-export type CleanupTarget = { address: string; kind: "request" | "snapshot"; manager: string | null };
+export type CleanupTarget = { address: string; kind: "request" | "snapshot" };
 export type FinanceCleanupScan = {
   company: string; finance: string; grant: string;
   targets: CleanupTarget[];
   financeOwnedRequests: string[];
   agentPolicies: string[];
-  untrackedRequests: string[];
+  historicalResetRequests: string[];
 };
 
-export function financeCleanupReaderPlan(finance: string, requester: string,
+export function financeRequestNeedsReset(finance: string, requester: string,
   recorded: { includeFinance: boolean; manager: string | null } | undefined):
-  { manager: string | null } | null {
-  if (!recorded || (!recorded.includeFinance && requester !== finance)) return null;
-  return { manager: recorded.manager };
+  boolean {
+  return requester === finance || recorded?.includeFinance === true;
 }
 
 export async function scanFinanceReaderCleanup(args: {
@@ -55,7 +54,7 @@ export async function scanFinanceReaderCleanup(args: {
   const targets: CleanupTarget[] = [];
   const financeOwnedRequests: string[] = [];
   const agentPolicies: string[] = [];
-  const untrackedRequests: string[] = [];
+  const historicalResetRequests: string[] = [];
   const readers = recordedRequestReaders(company);
   for (const { pubkey, account } of accounts) {
     if (!account.owner.equals(PROGRAM_ID)) continue;
@@ -66,22 +65,24 @@ export async function scanFinanceReaderCleanup(args: {
         company: PublicKey; requester: PublicKey; private_ready: boolean;
       };
       if (!request.company.equals(new PublicKey(company)) || !request.private_ready) continue;
-      if (request.requester.toBase58() === policy.finance) financeOwnedRequests.push(pubkey.toBase58());
+      const financeOwned = request.requester.toBase58() === policy.finance;
+      if (financeOwned) financeOwnedRequests.push(pubkey.toBase58());
       const recorded = readers.get(pubkey.toBase58());
       if (!recorded) {
-        untrackedRequests.push(pubkey.toBase58());
+        historicalResetRequests.push(pubkey.toBase58());
+        targets.push({ address: pubkey.toBase58(), kind: "request" });
         continue;
       }
-      const plan = financeCleanupReaderPlan(policy.finance as string,
-        request.requester.toBase58(), recorded);
-      if (plan) targets.push({ address: pubkey.toBase58(), kind: "request", manager: plan.manager });
+      if (financeRequestNeedsReset(policy.finance as string, request.requester.toBase58(), recorded)) {
+        targets.push({ address: pubkey.toBase58(), kind: "request" });
+      }
     } else if (bytes.equals(SNAPSHOT)) {
       const snapshot = coder.decode("TreasurySnapshot", account.data) as {
         company: PublicKey; private_ready: boolean;
       };
       if (snapshot.company.toBase58() === company && snapshot.private_ready &&
           pubkey.equals(snapshotAddress(new PublicKey(company)))) {
-        targets.push({ address: pubkey.toBase58(), kind: "snapshot", manager: null });
+        targets.push({ address: pubkey.toBase58(), kind: "snapshot" });
       }
     } else if (bytes.equals(AGENT)) {
       const agent = coder.decode("AgentPolicy", account.data) as { company: PublicKey; private_ready: boolean };
@@ -91,5 +92,5 @@ export async function scanFinanceReaderCleanup(args: {
   if (!policySeen) throw new Error("PER account scan did not include the company policy; cleanup would be incomplete");
   targets.sort((a, b) => a.address.localeCompare(b.address));
   return { company, finance: policy.finance as string, grant: grantAddress,
-    targets, financeOwnedRequests, agentPolicies, untrackedRequests };
+    targets, financeOwnedRequests, agentPolicies, historicalResetRequests };
 }

@@ -43,7 +43,7 @@ test("Finance and Manager approval instructions carry distinct grant accounts", 
 test("privacy activation encodes Founder-only readers for a revoked Finance member", async () => {
   const requestPermission = Keypair.generate().publicKey;
   const accounts = {
-    founder: actor, policy: company, request,
+    founder: actor, policy: company, request, requesterGrant: PROGRAM_ID,
     permission: requestPermission, ephemeralVault: requestPermission,
     magicProgram: requestPermission, permissionProgram: requestPermission,
   };
@@ -58,5 +58,21 @@ test("privacy activation encodes Founder-only readers for a revoked Finance memb
   })));
   assert.ok(snapshotInstruction.data.equals(program.coder.instruction.encode("activateSnapshotPrivacy", {
     includeFinance: false,
+  })));
+});
+
+test("request reader reset can omit a revoked requester and require a Viewer grant", async () => {
+  const requestPermission = Keypair.generate().publicKey;
+  const accounts = { founder: actor, policy: company, request,
+    viewerGrant: PROGRAM_ID, permission: requestPermission,
+    ephemeralVault: requestPermission, magicProgram: requestPermission,
+    permissionProgram: requestPermission };
+  const reset = await program.methods.setRequestReadersV2(false, false,
+    anchor.web3.PublicKey.default, anchor.web3.PublicKey.default)
+    .accountsPartial(accounts).instruction();
+  assert.ok(reset.keys[3]!.pubkey.equals(PROGRAM_ID));
+  assert.ok(reset.data.equals(program.coder.instruction.encode("setRequestReadersV2", {
+    includeRequester: false, includeFinance: false,
+    manager: anchor.web3.PublicKey.default, viewer: anchor.web3.PublicKey.default,
   })));
 });

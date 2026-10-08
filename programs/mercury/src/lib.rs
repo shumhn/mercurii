@@ -21,8 +21,11 @@ const REQUEST_SEED: &[u8] = b"payment-request";
 const AGENT_SEED: &[u8] = b"agent-policy";
 const SNAPSHOT_SEED: &[u8] = b"treasury-snapshot";
 const GRANT_SEED: &[u8] = b"team-grant";
+const BRANCH_SCOPE_SEED: &[u8] = b"branch-scope";
 const ROLE_FINANCE: u8 = 1;
 const ROLE_MANAGER: u8 = 2;
+const ROLE_REQUESTER: u8 = 3;
+const ROLE_VIEWER: u8 = 4;
 const MAX_GRANT_RECIPIENTS: usize = 16;
 const MAX_GRANT_READERS: usize = 8;
 const PERIOD_SECONDS: i64 = 30 * 24 * 60 * 60;
@@ -31,6 +34,17 @@ const STATUS_SUBMITTED: u8 = 1;
 const STATUS_APPROVED: u8 = 2;
 const STATUS_EXECUTED: u8 = 3;
 const STATUS_REJECTED: u8 = 4;
+
+fn request_branch_scope(company: Pubkey, request_id: u64) -> Result<Pubkey> {
+    let branch = request_id >> 40;
+    require!(branch > 0, MercuryError::InvalidScope);
+    let bytes = (branch as u32).to_le_bytes();
+    Ok(Pubkey::find_program_address(
+        &[BRANCH_SCOPE_SEED, company.as_ref(), &bytes[..3]],
+        &crate::ID,
+    )
+    .0)
+}
 
 #[ephemeral]
 #[program]
@@ -370,6 +384,131 @@ pub mod mercury {
         Ok(())
     }
 
+    /// Founder issues a private, non-spending role for a requester or viewer.
+    pub fn activate_member_grant_privacy(ctx: Context<ActivateRootGrantPrivacy>) -> Result<()> {
+        require!(
+            ctx.accounts.policy.private_ready,
+            MercuryError::PrivacyNotActive
+        );
+        require!(
+            !ctx.accounts.grant.private_ready,
+            MercuryError::PrivacyAlreadyActive
+        );
+        require_keys_eq!(
+            ctx.accounts.grant.company,
+            ctx.accounts.policy.key(),
+            MercuryError::WrongCompany
+        );
+        require_keys_eq!(
+            ctx.accounts.grant.grantor,
+            ctx.accounts.policy.founder,
+            MercuryError::Unauthorized
+        );
+        require!(
+            ctx.accounts.grant.member != ctx.accounts.policy.founder
+                && ctx.accounts.grant.member != ctx.accounts.policy.finance
+                && ctx.accounts.grant.member != Pubkey::default(),
+            MercuryError::InvalidMember
+        );
+        let id_bytes = ctx.accounts.grant.id.to_le_bytes();
+        let bump = [ctx.bumps.grant];
+        let seeds: &[&[u8]] = &[
+            GRANT_SEED,
+            ctx.accounts.grant.company.as_ref(),
+            ctx.accounts.grant.grantor.as_ref(),
+            ctx.accounts.grant.member.as_ref(),
+            &id_bytes,
+            &bump,
+        ];
+        let flags = TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG;
+        UpdateEphemeralPermissionCpi {
+            payer: ctx.accounts.grant.to_account_info(),
+            permissioned_account: ctx.accounts.grant.to_account_info(),
+            permission: ctx.accounts.permission.to_account_info(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            authority: ctx.accounts.grant.to_account_info(),
+            authority_is_signer: false,
+            args: EphemeralMembersArgs {
+                is_private: true,
+                members: vec![
+                    Member {
+                        flags,
+                        pubkey: ctx.accounts.policy.founder,
+                    },
+                    Member {
+                        flags,
+                        pubkey: ctx.accounts.grant.member,
+                    },
+                ],
+            },
+        }
+        .invoke_signed(&[&seeds])?;
+        ctx.accounts.grant.private_ready = true;
+        Ok(())
+    }
+
+    /// Founder repairs or refreshes the company policy ACL from one active
+    /// Finance grant after grant rotation. It cannot revive a revoked grant.
+    pub fn restore_policy_readers(ctx: Context<ActivateRootGrantPrivacy>) -> Result<()> {
+        let grant = &ctx.accounts.grant;
+        require!(
+            ctx.accounts.policy.private_ready,
+            MercuryError::PrivacyNotActive
+        );
+        require!(
+            grant.company == ctx.accounts.policy.key()
+                && grant.grantor == ctx.accounts.policy.founder
+                && grant.member == ctx.accounts.policy.finance
+                && grant.parent == Pubkey::default()
+                && grant.role == ROLE_FINANCE
+                && grant.private_ready
+                && grant.active
+                && !grant.revoked,
+            MercuryError::InvalidGrant
+        );
+        let flags = TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG;
+        let mut members = vec![
+            Member {
+                flags,
+                pubkey: ctx.accounts.policy.founder,
+            },
+            Member {
+                flags,
+                pubkey: ctx.accounts.policy.finance,
+            },
+        ];
+        for reader in &grant.child_readers {
+            require!(
+                !members.iter().any(|member| member.pubkey == *reader),
+                MercuryError::DuplicateMember
+            );
+            members.push(Member {
+                flags,
+                pubkey: *reader,
+            });
+        }
+        let bump = [ctx.bumps.policy];
+        let seeds: &[&[u8]] = &[POLICY_SEED, ctx.accounts.policy.founder.as_ref(), &bump];
+        UpdateEphemeralPermissionCpi {
+            payer: ctx.accounts.policy.to_account_info(),
+            permissioned_account: ctx.accounts.policy.to_account_info(),
+            permission: ctx.accounts.policy_permission.to_account_info(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            authority: ctx.accounts.policy.to_account_info(),
+            authority_is_signer: false,
+            args: EphemeralMembersArgs {
+                is_private: true,
+                members,
+            },
+        }
+        .invoke_signed(&[&seeds])?;
+        Ok(())
+    }
+
     /// Finance grants a manager access only after the manager is added to the
     /// parent grant's PER readers. This lets the manager verify parent revocation.
     pub fn activate_child_grant_privacy(ctx: Context<ActivateChildGrantPrivacy>) -> Result<()> {
@@ -575,14 +714,23 @@ pub mod mercury {
                 && !ctx.accounts.grant.revoked,
             MercuryError::WrongStatus
         );
-        require!(
-            recipients.len() > 0 && recipients.len() <= MAX_GRANT_RECIPIENTS,
-            MercuryError::InvalidRecipient
-        );
-        require!(
-            per_payment_cap_micro > 0 && period_cap_micro >= per_payment_cap_micro,
-            MercuryError::InvalidLimit
-        );
+        let non_spending = role == ROLE_REQUESTER || role == ROLE_VIEWER;
+        if non_spending {
+            require!(recipients.is_empty(), MercuryError::InvalidRecipient);
+            require!(
+                per_payment_cap_micro == 0 && period_cap_micro == 0 && !may_delegate,
+                MercuryError::InvalidLimit
+            );
+        } else {
+            require!(
+                recipients.len() > 0 && recipients.len() <= MAX_GRANT_RECIPIENTS,
+                MercuryError::InvalidRecipient
+            );
+            require!(
+                per_payment_cap_micro > 0 && period_cap_micro >= per_payment_cap_micro,
+                MercuryError::InvalidLimit
+            );
+        }
         for (index, recipient) in recipients.iter().enumerate() {
             require!(
                 *recipient != Pubkey::default() && !recipients[..index].contains(recipient),
@@ -591,19 +739,28 @@ pub mod mercury {
         }
         if ctx.accounts.grantor.key() == ctx.accounts.policy.founder {
             require!(
-                role == ROLE_FINANCE && ctx.accounts.grant.parent == Pubkey::default(),
-                MercuryError::Unauthorized
+                ctx.accounts.grant.parent == Pubkey::default(),
+                MercuryError::InvalidGrant
             );
-            require_keys_eq!(
-                ctx.accounts.grant.member,
-                ctx.accounts.policy.finance,
-                MercuryError::Unauthorized
-            );
-            require!(scope == Pubkey::default(), MercuryError::InvalidScope);
-            require!(
-                period_cap_micro <= ctx.accounts.policy.monthly_limit_micro,
-                MercuryError::InvalidLimit
-            );
+            if non_spending {
+                require!(
+                    ctx.accounts.grant.member != ctx.accounts.policy.founder
+                        && ctx.accounts.grant.member != ctx.accounts.policy.finance,
+                    MercuryError::InvalidMember
+                );
+            } else {
+                require!(role == ROLE_FINANCE, MercuryError::Unauthorized);
+                require_keys_eq!(
+                    ctx.accounts.grant.member,
+                    ctx.accounts.policy.finance,
+                    MercuryError::Unauthorized
+                );
+                require!(scope == Pubkey::default(), MercuryError::InvalidScope);
+                require!(
+                    period_cap_micro <= ctx.accounts.policy.monthly_limit_micro,
+                    MercuryError::InvalidLimit
+                );
+            }
         } else {
             let parent = ctx
                 .accounts
@@ -797,21 +954,24 @@ pub mod mercury {
             ctx.accounts.policy.founder.as_ref(),
             &policy_bump,
         ];
-        UpdateEphemeralPermissionCpi {
-            payer: ctx.accounts.policy.to_account_info(),
-            permissioned_account: ctx.accounts.policy.to_account_info(),
-            permission: ctx.accounts.policy_permission.to_account_info(),
-            vault: ctx.accounts.ephemeral_vault.to_account_info(),
-            magic_program: ctx.accounts.magic_program.to_account_info(),
-            permission_program: ctx.accounts.permission_program.to_account_info(),
-            authority: ctx.accounts.policy.to_account_info(),
-            authority_is_signer: false,
-            args: EphemeralMembersArgs {
-                is_private: true,
-                members: policy_members,
-            },
+        if ctx.accounts.grant.role == ROLE_FINANCE || ctx.accounts.grant.parent != Pubkey::default()
+        {
+            UpdateEphemeralPermissionCpi {
+                payer: ctx.accounts.policy.to_account_info(),
+                permissioned_account: ctx.accounts.policy.to_account_info(),
+                permission: ctx.accounts.policy_permission.to_account_info(),
+                vault: ctx.accounts.ephemeral_vault.to_account_info(),
+                magic_program: ctx.accounts.magic_program.to_account_info(),
+                permission_program: ctx.accounts.permission_program.to_account_info(),
+                authority: ctx.accounts.policy.to_account_info(),
+                authority_is_signer: false,
+                args: EphemeralMembersArgs {
+                    is_private: true,
+                    members: policy_members,
+                },
+            }
+            .invoke_signed(&[&policy_seeds])?;
         }
-        .invoke_signed(&[&policy_seeds])?;
         ctx.accounts.grant.active = false;
         ctx.accounts.grant.revoked = true;
         Ok(())
@@ -1056,7 +1216,7 @@ pub mod mercury {
                     to: ctx.accounts.request.to_account_info(),
                 },
             ),
-            ephemeral_rollups_sdk::ephemeral_accounts::rent(EphemeralPermission::size_of(4) as u32),
+            ephemeral_rollups_sdk::ephemeral_accounts::rent(EphemeralPermission::size_of(5) as u32),
         )?;
         let request = &mut ctx.accounts.request;
         request.company = company;
@@ -1137,6 +1297,36 @@ pub mod mercury {
             ctx.accounts.policy.key(),
             MercuryError::WrongCompany
         );
+        if ctx.accounts.request.requester != ctx.accounts.policy.founder {
+            let grant = ctx
+                .accounts
+                .requester_grant
+                .as_ref()
+                .ok_or(MercuryError::MissingGrant)?;
+            let finance_requester = ctx.accounts.request.requester == ctx.accounts.policy.finance;
+            require!(
+                grant.company == ctx.accounts.policy.key()
+                    && grant.grantor == ctx.accounts.policy.founder
+                    && grant.member == ctx.accounts.request.requester
+                    && grant.role
+                        == if finance_requester {
+                            ROLE_FINANCE
+                        } else {
+                            ROLE_REQUESTER
+                        }
+                    && grant.private_ready
+                    && grant.active
+                    && !grant.revoked
+                    && (finance_requester
+                        || grant.scope == Pubkey::default()
+                        || grant.scope
+                            == request_branch_scope(
+                                ctx.accounts.policy.key(),
+                                ctx.accounts.request.id
+                            )?),
+                MercuryError::Unauthorized
+            );
+        }
         let id_bytes = ctx.accounts.request.id.to_le_bytes();
         let bump = [ctx.bumps.request];
         let seeds: &[&[u8]] = &[
@@ -1268,12 +1458,144 @@ pub mod mercury {
         Ok(())
     }
 
+    /// Founder can grant a Viewer access or remove a departed requester's read
+    /// access while keeping payment authority unchanged.
+    pub fn set_request_readers_v2(
+        ctx: Context<SetRequestReadersV2>,
+        include_requester: bool,
+        include_finance: bool,
+        manager: Pubkey,
+        viewer: Pubkey,
+    ) -> Result<()> {
+        require!(
+            ctx.accounts.request.private_ready,
+            MercuryError::PrivacyNotActive
+        );
+        require_keys_eq!(
+            ctx.accounts.request.company,
+            ctx.accounts.policy.key(),
+            MercuryError::WrongCompany
+        );
+        if viewer != Pubkey::default() {
+            let grant = ctx
+                .accounts
+                .viewer_grant
+                .as_ref()
+                .ok_or(MercuryError::MissingGrant)?;
+            require!(
+                grant.company == ctx.accounts.policy.key()
+                    && grant.grantor == ctx.accounts.policy.founder
+                    && grant.member == viewer
+                    && grant.role == ROLE_VIEWER
+                    && grant.private_ready
+                    && grant.active
+                    && !grant.revoked
+                    && (grant.scope == Pubkey::default()
+                        || grant.scope
+                            == request_branch_scope(
+                                ctx.accounts.policy.key(),
+                                ctx.accounts.request.id
+                            )?),
+                MercuryError::Unauthorized
+            );
+        }
+        let flags = TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG;
+        let mut members = vec![Member {
+            flags,
+            pubkey: ctx.accounts.policy.founder,
+        }];
+        let mut add = |address: Pubkey| -> Result<()> {
+            require!(
+                !members.iter().any(|member| member.pubkey == address),
+                MercuryError::DuplicateMember
+            );
+            members.push(Member {
+                flags,
+                pubkey: address,
+            });
+            Ok(())
+        };
+        if include_requester && ctx.accounts.request.requester != ctx.accounts.policy.founder {
+            add(ctx.accounts.request.requester)?;
+        }
+        if include_finance && ctx.accounts.policy.finance != ctx.accounts.policy.founder {
+            add(ctx.accounts.policy.finance)?;
+        }
+        if manager != Pubkey::default() {
+            add(manager)?;
+        }
+        if viewer != Pubkey::default() {
+            add(viewer)?;
+        }
+        require!(members.len() <= 5, MercuryError::TooManyMembers);
+        let id_bytes = ctx.accounts.request.id.to_le_bytes();
+        let bump = [ctx.bumps.request];
+        let seeds: &[&[u8]] = &[
+            REQUEST_SEED,
+            ctx.accounts.request.company.as_ref(),
+            ctx.accounts.request.requester.as_ref(),
+            &id_bytes,
+            &bump,
+        ];
+        UpdateEphemeralPermissionCpi {
+            payer: ctx.accounts.request.to_account_info(),
+            permissioned_account: ctx.accounts.request.to_account_info(),
+            permission: ctx.accounts.permission.to_account_info(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            authority: ctx.accounts.request.to_account_info(),
+            authority_is_signer: false,
+            args: EphemeralMembersArgs {
+                is_private: true,
+                members,
+            },
+        }
+        .invoke_signed(&[&seeds])?;
+        Ok(())
+    }
+
     /// Only the requester can populate the private amount and recipient.
     pub fn submit_payment(
         ctx: Context<SubmitPayment>,
         recipient: Pubkey,
         amount_micro: u64,
     ) -> Result<()> {
+        require_keys_eq!(
+            ctx.accounts.request.company,
+            ctx.accounts.policy.key(),
+            MercuryError::WrongCompany
+        );
+        if ctx.accounts.request.requester != ctx.accounts.policy.founder {
+            let grant = ctx
+                .accounts
+                .requester_grant
+                .as_ref()
+                .ok_or(MercuryError::MissingGrant)?;
+            let finance_requester = ctx.accounts.request.requester == ctx.accounts.policy.finance;
+            require!(
+                grant.company == ctx.accounts.policy.key()
+                    && grant.grantor == ctx.accounts.policy.founder
+                    && grant.member == ctx.accounts.request.requester
+                    && grant.role
+                        == if finance_requester {
+                            ROLE_FINANCE
+                        } else {
+                            ROLE_REQUESTER
+                        }
+                    && grant.private_ready
+                    && grant.active
+                    && !grant.revoked
+                    && (finance_requester
+                        || grant.scope == Pubkey::default()
+                        || grant.scope
+                            == request_branch_scope(
+                                ctx.accounts.policy.key(),
+                                ctx.accounts.request.id
+                            )?),
+                MercuryError::Unauthorized
+            );
+        }
         require!(
             ctx.accounts.request.private_ready,
             MercuryError::PrivacyNotActive
@@ -1332,6 +1654,11 @@ pub mod mercury {
                     MercuryError::InvalidGrant
                 );
             } else {
+                require_keys_eq!(
+                    grant.scope,
+                    request_branch_scope(ctx.accounts.policy.key(), ctx.accounts.request.id)?,
+                    MercuryError::InvalidScope
+                );
                 let parent = ctx
                     .accounts
                     .parent_grant
@@ -1529,11 +1856,17 @@ pub mod mercury {
                     && (grant.role == ROLE_FINANCE || grant.role == ROLE_MANAGER),
                 MercuryError::Unauthorized
             );
-            require!(
-                grant.recipients.contains(&ctx.accounts.request.recipient),
-                MercuryError::InvalidRecipient
-            );
+            require!(!grant.revoked, MercuryError::Unauthorized);
+            grant.check_payment(
+                ctx.accounts.request.recipient,
+                ctx.accounts.request.amount_micro,
+            )?;
             if grant.role == ROLE_MANAGER {
+                require_keys_eq!(
+                    grant.scope,
+                    request_branch_scope(ctx.accounts.policy.key(), ctx.accounts.request.id)?,
+                    MercuryError::InvalidScope
+                );
                 let parent = ctx
                     .accounts
                     .parent_grant
@@ -1541,7 +1874,21 @@ pub mod mercury {
                     .ok_or(MercuryError::MissingGrant)?;
                 require_keys_eq!(parent.key(), grant.parent, MercuryError::InvalidGrant);
                 require!(
-                    parent.active && parent.member == grant.grantor,
+                    parent.active
+                        && !parent.revoked
+                        && parent.private_ready
+                        && parent.role == ROLE_FINANCE
+                        && parent.may_delegate
+                        && parent.member == grant.grantor
+                        && parent.grantor == ctx.accounts.policy.founder
+                        && parent.member == ctx.accounts.policy.finance,
+                    MercuryError::Unauthorized
+                );
+            } else {
+                require!(
+                    grant.grantor == ctx.accounts.policy.founder
+                        && grant.member == ctx.accounts.policy.finance
+                        && grant.parent == Pubkey::default(),
                     MercuryError::Unauthorized
                 );
             }
@@ -2341,6 +2688,31 @@ pub struct ActivateRequestPrivacy<'info> {
         bump,
     )]
     pub request: Account<'info, PaymentRequest>,
+    #[account(seeds = [GRANT_SEED, requester_grant.company.as_ref(), requester_grant.grantor.as_ref(), requester_grant.member.as_ref(), &requester_grant.id.to_le_bytes()], bump)]
+    pub requester_grant: Option<Account<'info, TeamGrant>>,
+    /// CHECK: MagicBlock permission PDA.
+    #[account(mut, seeds = [PERMISSION_SEED, request.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
+    pub permission: UncheckedAccount<'info>,
+    /// CHECK: fixed program address.
+    #[account(address = PERMISSION_PROGRAM_ID)]
+    pub permission_program: UncheckedAccount<'info>,
+    /// CHECK: fixed vault address.
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub ephemeral_vault: UncheckedAccount<'info>,
+    /// CHECK: fixed program address.
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+pub struct SetRequestReadersV2<'info> {
+    pub founder: Signer<'info>,
+    #[account(seeds = [POLICY_SEED, policy.founder.as_ref()], has_one = founder, bump)]
+    pub policy: Account<'info, CompanyPolicy>,
+    #[account(mut, seeds = [REQUEST_SEED, request.company.as_ref(), request.requester.as_ref(), &request.id.to_le_bytes()], bump)]
+    pub request: Account<'info, PaymentRequest>,
+    #[account(seeds = [GRANT_SEED, viewer_grant.company.as_ref(), viewer_grant.grantor.as_ref(), viewer_grant.member.as_ref(), &viewer_grant.id.to_le_bytes()], bump)]
+    pub viewer_grant: Option<Account<'info, TeamGrant>>,
     /// CHECK: MagicBlock permission PDA.
     #[account(mut, seeds = [PERMISSION_SEED, request.key().as_ref()], bump, seeds::program = PERMISSION_PROGRAM_ID)]
     pub permission: UncheckedAccount<'info>,
@@ -2358,6 +2730,8 @@ pub struct ActivateRequestPrivacy<'info> {
 #[derive(Accounts)]
 pub struct SubmitPayment<'info> {
     pub requester: Signer<'info>,
+    #[account(seeds = [POLICY_SEED, policy.founder.as_ref()], bump)]
+    pub policy: Account<'info, CompanyPolicy>,
     #[account(
         mut,
         seeds = [REQUEST_SEED, request.company.as_ref(), requester.key().as_ref(), &request.id.to_le_bytes()],
@@ -2365,6 +2739,8 @@ pub struct SubmitPayment<'info> {
         bump,
     )]
     pub request: Account<'info, PaymentRequest>,
+    #[account(seeds = [GRANT_SEED, requester_grant.company.as_ref(), requester_grant.grantor.as_ref(), requester_grant.member.as_ref(), &requester_grant.id.to_le_bytes()], bump)]
+    pub requester_grant: Option<Account<'info, TeamGrant>>,
 }
 
 #[derive(Accounts)]
@@ -2720,5 +3096,19 @@ mod team_grant_tests {
         grant.active = true;
         grant.revoked = true;
         assert!(grant.check_payment(allowed, 1).is_err());
+    }
+
+    #[test]
+    fn manager_scope_is_derived_from_the_request_branch() {
+        let company = Pubkey::new_unique();
+        let branch: u64 = 42;
+        let request_id = (branch << 40) | 123;
+        let expected = Pubkey::find_program_address(
+            &[BRANCH_SCOPE_SEED, company.as_ref(), &[42, 0, 0]],
+            &crate::ID,
+        )
+        .0;
+        assert_eq!(request_branch_scope(company, request_id).unwrap(), expected);
+        assert!(request_branch_scope(company, 123).is_err());
     }
 }

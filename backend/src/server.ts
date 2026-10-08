@@ -5,12 +5,14 @@ import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
+import { inspectMemberGrant } from "./member-onboarding.ts";
 import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild,
   waitForCleanupReceipt } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
+import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { bindSignedPayment, getPayment, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
@@ -21,7 +23,7 @@ import {
 } from "./magicblock.ts";
 import {
   BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, agentPaymentAccounts, buildOperation,
-  paymentExecutionAccounts, paymentRequestAddress, paymentStatusFromRequest,
+  paymentExecutionAccounts, paymentRequestAddress, paymentStatusFromRequest, requestBranchScope,
   readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTeamGrant, readTreasurySnapshot,
 } from "./operations.ts";
 
@@ -114,6 +116,8 @@ async function approvalPlan(requestAddress: string, actor: string, grantInput: u
       if (actor !== policy.finance || grant.grantor !== policy.founder ||
           grant.parent !== PublicKey.default.toBase58()) throw new Error("Invalid Finance approval grant");
     } else if (grant.role === 2) {
+      const expectedScope = requestBranchScope(new PublicKey(companyAddress), String(request.id)).toBase58();
+      if (grant.scope !== expectedScope) throw new Error("Manager grant does not cover this payment branch");
       parentGrantAddress = asAddress(parentGrantInput, "parentGrant");
       if (grant.parent !== parentGrantAddress) throw new Error("Manager grant has a different parent");
       const parent = await readTeamGrant(companyAddress, parentGrantAddress, token);
@@ -220,13 +224,13 @@ createServer(async (req, res) => {
       const result = await inspectManagerGrant({
         company: companyAddress, founder: founderAddress, finance: actor,
         manager: body.manager, grantId: body.grantId, parentGrant: body.parentGrant,
-        scope: body.scope, perPaymentCapMicro: body.perPaymentCapMicro,
+        branchId: body.branchId, perPaymentCapMicro: body.perPaymentCapMicro,
         periodCapMicro: body.periodCapMicro, recipients: body.recipients, teeToken: token,
       });
       if (result.next.status !== "build") return reply(res, 200, result);
       const transaction = await buildOperation({
         operation: result.next.operation!, actor, member: body.manager, grantId: body.grantId,
-        grant: result.grantAddress, role: "manager", parentGrant: body.parentGrant, scope: body.scope,
+        grant: result.grantAddress, role: "manager", parentGrant: body.parentGrant, scope: result.scopeAddress,
         perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro,
         recipients: body.recipients, mayDelegate: false,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
@@ -237,6 +241,24 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
+    if (req.method === "POST" && req.url === "/v1/onboarding/member-grant/next") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== founderAddress) throw new Error("Founder must issue member grants");
+      const result = await inspectMemberGrant({ company: companyAddress, founder: founderAddress,
+        member: body.member, role: body.role, grantId: body.grantId, branchId: body.branchId, teeToken: token });
+      if (result.next.status !== "build") return reply(res, 200, result);
+      const transaction = await buildOperation({ operation: result.next.operation!, actor,
+        member: body.member, grantId: body.grantId, grant: result.grantAddress,
+        role: body.role, scope: result.scopeAddress, recipients: [], mayDelegate: false,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = recordOnboardingBuild({ company: companyAddress, target: result.grantAddress,
+        operation: result.next.operation!, chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
+    }
     if (req.method === "POST" && req.url?.startsWith("/v1/onboarding/receipts/") && req.url.endsWith("/confirm")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -244,12 +266,15 @@ createServer(async (req, res) => {
       const body = await readJson(req);
       if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
       const receipt = await confirmOnboardingReceipt(id, body.signedTransactionBase64, token);
-      if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupFinance:") &&
+      if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupFinanceV2:") &&
           receipt.target !== companyAddress) {
-        applyConfirmedReaderCleanup(receipt.company, receipt.target, "finance");
+        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
       }
-      if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupManager:")) {
-        applyConfirmedReaderCleanup(receipt.company, receipt.target, "manager");
+      if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupManagerV2:")) {
+        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+      }
+      if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupMember:")) {
+        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
       }
       return reply(res, 200, receipt);
     }
@@ -340,12 +365,12 @@ createServer(async (req, res) => {
       const scan = await scanFinanceReaderCleanup({
         company: companyAddress, founder: founderAddress, grant: body.grant, teeToken: token,
       });
-      const operationKey = `cleanupFinance:${scan.grant}`;
+      const operationKey = `cleanupFinanceV2:${scan.grant}`;
       const pending = [];
       for (const target of scan.targets) {
         const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
         if (prior?.status === "confirmed") {
-          if (target.kind === "request") applyConfirmedReaderCleanup(companyAddress, target.address, "finance");
+          if (target.kind === "request") applyConfirmedReaderCleanup(companyAddress, target.address, "all");
           continue;
         }
         if (prior && waitForCleanupReceipt(prior)) {
@@ -354,9 +379,9 @@ createServer(async (req, res) => {
         }
         if (pending.length >= 10) break;
         const transaction = await buildOperation({
-          operation: target.kind === "request" ? "setRequestReaders" : "setSnapshotReaders",
-          actor: founderAddress, request: target.address, includeFinance: false,
-          manager: target.manager,
+          operation: target.kind === "request" ? "setRequestReadersV2" : "setSnapshotReaders",
+          actor: founderAddress, request: target.address, includeRequester: false,
+          includeFinance: false, manager: null, viewer: null,
         }, { company: companyAddress, founder: founderAddress, teeToken: token });
         const receipt = recordOnboardingBuild({
           company: companyAddress, target: target.address, operation: operationKey,
@@ -367,13 +392,12 @@ createServer(async (req, res) => {
       const confirmedCount = scan.targets.filter((target) =>
         latestOnboardingReceipt(companyAddress, target.address, operationKey)?.status === "confirmed").length;
       return reply(res, 200, {
-        status: confirmedCount === scan.targets.length && scan.financeOwnedRequests.length === 0 &&
-          scan.agentPolicies.length === 0 && scan.untrackedRequests.length === 0 ? "ready" : "cleanup_required",
+        status: confirmedCount === scan.targets.length && scan.agentPolicies.length === 0 ? "ready" : "cleanup_required",
         grant: scan.grant, totalTargets: scan.targets.length, confirmedCount, pending,
         residualReadAccess: {
           financeOwnedRequests: scan.financeOwnedRequests,
           agentPolicies: scan.agentPolicies,
-          untrackedRequests: scan.untrackedRequests,
+          historicalResetRequests: scan.historicalResetRequests,
         },
       });
     }
@@ -386,12 +410,12 @@ createServer(async (req, res) => {
         company: companyAddress, founder: founderAddress, grant: body.grant,
         parentGrant: body.parentGrant, teeToken: token,
       });
-      const operationKey = `cleanupManager:${scan.grant}`;
+      const operationKey = `cleanupManagerV2:${scan.grant}`;
       const pending = [];
       for (const target of scan.targets) {
         const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
         if (prior?.status === "confirmed") {
-          applyConfirmedReaderCleanup(companyAddress, target.address, "manager");
+          applyConfirmedReaderCleanup(companyAddress, target.address, "all");
           continue;
         }
         if (prior && waitForCleanupReceipt(prior)) {
@@ -400,8 +424,8 @@ createServer(async (req, res) => {
         }
         if (pending.length >= 10) break;
         const transaction = await buildOperation({
-          operation: "setRequestReaders", actor: founderAddress, request: target.address,
-          includeFinance: target.includeFinance, manager: null,
+          operation: "setRequestReadersV2", actor: founderAddress, request: target.address,
+          includeRequester: false, includeFinance: false, manager: null, viewer: null,
         }, { company: companyAddress, founder: founderAddress, teeToken: token });
         const receipt = recordOnboardingBuild({
           company: companyAddress, target: target.address, operation: operationKey,
@@ -412,12 +436,106 @@ createServer(async (req, res) => {
       const confirmedCount = scan.targets.filter((target) =>
         latestOnboardingReceipt(companyAddress, target.address, operationKey)?.status === "confirmed").length;
       return reply(res, 200, {
-        status: confirmedCount === scan.targets.length && scan.managerOwnedRequests.length === 0 &&
-          scan.untrackedRequests.length === 0 ? "ready" : "cleanup_required",
+        status: confirmedCount === scan.targets.length ? "ready" : "cleanup_required",
         grant: scan.grant, manager: scan.manager, totalTargets: scan.targets.length, confirmedCount, pending,
         residualReadAccess: { managerOwnedRequests: scan.managerOwnedRequests,
-          untrackedRequests: scan.untrackedRequests },
+          historicalResetRequests: scan.historicalResetRequests },
       });
+    }
+    if (req.method === "POST" && req.url === "/v1/access/member-revocation-cleanup/plan") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must run member reader cleanup");
+      const scan = await scanMemberReaderCleanup({ company: companyAddress, founder: founderAddress,
+        grant: body.grant, teeToken: token });
+      const operationKey = `cleanupMember:${scan.grant}`;
+      const pending = [];
+      for (const address of scan.targets) {
+        const prior = latestOnboardingReceipt(companyAddress, address, operationKey);
+        if (prior?.status === "confirmed") {
+          applyConfirmedReaderCleanup(companyAddress, address, "all");
+          continue;
+        }
+        if (prior && waitForCleanupReceipt(prior)) {
+          pending.push({ target: address, receiptId: prior.id, transaction: null });
+          continue;
+        }
+        if (pending.length >= 10) break;
+        const transaction = await buildOperation({ operation: "setRequestReadersV2",
+          actor: founderAddress, request: address, includeRequester: false,
+          includeFinance: false, manager: null, viewer: null,
+        }, { company: companyAddress, founder: founderAddress, teeToken: token });
+        const receipt = recordOnboardingBuild({ company: companyAddress, target: address,
+          operation: operationKey, chain: transaction.sendTo,
+          transactionBase64: transaction.transactionBase64 });
+        pending.push({ target: address, receiptId: receipt.id, transaction });
+      }
+      const confirmedCount = scan.targets.filter((address) =>
+        latestOnboardingReceipt(companyAddress, address, operationKey)?.status === "confirmed").length;
+      return reply(res, 200, { status: confirmedCount === scan.targets.length ? "ready" : "cleanup_required",
+        ...scan, totalTargets: scan.targets.length, confirmedCount, pending });
+    }
+    if (req.method === "POST" && req.url === "/v1/access/request-viewer/build") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must share a request");
+      const requestAddress = asAddress(body.request, "request");
+      const viewerGrantAddress = asAddress(body.viewerGrant, "viewerGrant");
+      const [request, viewerGrant, policy] = await Promise.all([
+        readPaymentRequest(companyAddress, requestAddress, token),
+        readTeamGrant(companyAddress, viewerGrantAddress, token),
+        readCompanyPolicy(companyAddress, token),
+      ]);
+      const viewer = asAddress(body.viewer, "viewer");
+      if (viewer === request.requester || viewer === policy.finance || viewer === founderAddress) {
+        throw new Error("Viewer must be distinct from Founder, Finance, and requester");
+      }
+      if (viewerGrant.member !== viewer || viewerGrant.grantor !== founderAddress ||
+          viewerGrant.role !== 4 || viewerGrant.active !== true || viewerGrant.revoked !== false ||
+          (viewerGrant.scope !== PublicKey.default.toBase58() &&
+            viewerGrant.scope !== requestBranchScope(new PublicKey(companyAddress), String(request.id)).toBase58())) {
+        throw new Error("Active Viewer grant does not cover this request");
+      }
+      if (body.includeRequester !== true && body.includeRequester !== false) {
+        throw new Error("includeRequester must be boolean");
+      }
+      if (body.includeRequester && request.requester !== founderAddress) {
+        const requesterGrantAddress = asAddress(body.requesterGrant, "requesterGrant");
+        const requesterGrant = await readTeamGrant(companyAddress, requesterGrantAddress, token);
+        const requesterIsFinance = request.requester === policy.finance;
+        if (requesterGrant.member !== request.requester || requesterGrant.grantor !== founderAddress ||
+            requesterGrant.role !== (requesterIsFinance ? 1 : 3) ||
+            requesterGrant.active !== true || requesterGrant.revoked !== false ||
+            (!requesterIsFinance && requesterGrant.scope !== PublicKey.default.toBase58() &&
+              requesterGrant.scope !== requestBranchScope(new PublicKey(companyAddress), String(request.id)).toBase58())) {
+          throw new Error("Active requester grant is required to keep requester access");
+        }
+      }
+      const transaction = await buildOperation({ operation: "setRequestReadersV2",
+        actor: founderAddress, request: requestAddress, includeRequester: body.includeRequester,
+        includeFinance: false, manager: null, viewer, viewerGrant: viewerGrantAddress,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      return reply(res, 200, { status: "unsigned", request: requestAddress, viewer, transaction });
+    }
+    if (req.method === "POST" && req.url === "/v1/access/policy-readers/restore/build") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must restore policy readers");
+      const grantAddress = asAddress(body.grant, "grant");
+      const [policy, grant] = await Promise.all([
+        readCompanyPolicy(companyAddress, token), readTeamGrant(companyAddress, grantAddress, token),
+      ]);
+      if (grant.role !== 1 || grant.member !== policy.finance || grant.grantor !== founderAddress ||
+          grant.parent !== PublicKey.default.toBase58() || grant.active !== true || grant.revoked !== false) {
+        throw new Error("Active Founder-issued Finance grant is required");
+      }
+      const transaction = await buildOperation({ operation: "restorePolicyReaders",
+        actor: founderAddress, grant: grantAddress,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      return reply(res, 200, { status: "unsigned", grant: grantAddress, transaction });
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });
@@ -540,6 +658,20 @@ createServer(async (req, res) => {
           input.request = flow.request;
           input.recipient = terms.recipient;
           input.amountMicro = terms.amountMicro;
+        }
+        if ((operation === "activateRequestPrivacy" || operation === "submitPayment") &&
+            flow.requester !== founderAddress) {
+          const policy = await readCompanyPolicy(companyAddress, token);
+          const financeRequester = flow.requester === policy.finance;
+          const grantAddress = asAddress(body.requesterGrant, "requesterGrant");
+          const grant = await readTeamGrant(companyAddress, grantAddress, token);
+          if (grant.role !== (financeRequester ? 1 : 3) || grant.member !== flow.requester ||
+              grant.grantor !== founderAddress || grant.active !== true || grant.revoked !== false ||
+              (!financeRequester && grant.scope !== PublicKey.default.toBase58() &&
+                grant.scope !== requestBranchScope(new PublicKey(companyAddress), flow.requestId).toBase58())) {
+            throw new Error("Active requester grant for this payment branch is required");
+          }
+          input.requesterGrant = grantAddress;
         }
         transaction = await buildOperation(input as { operation: string; actor: string }, {
           company: companyAddress, founder: founderAddress, teeToken: token,

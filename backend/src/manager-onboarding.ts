@@ -3,7 +3,8 @@ import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
-import { BASE_RPC, PROGRAM_ID, TEE_RPC, readCompanyPolicy, readTeamGrant, teamGrantAddress } from "./operations.ts";
+import { BASE_RPC, PROGRAM_ID, TEE_RPC, branchScopeAddress, readCompanyPolicy,
+  readTeamGrant, teamGrantAddress } from "./operations.ts";
 import type { OnboardingStep } from "./onboarding.ts";
 import { confirmedOnboardingStep } from "./onboarding-journal.ts";
 
@@ -55,17 +56,19 @@ export function assertManagerWithinFinance(args: {
 
 export async function inspectManagerGrant(args: {
   company: unknown; founder: unknown; finance: unknown; manager: unknown;
-  grantId: unknown; parentGrant: unknown; scope: unknown;
+  grantId: unknown; parentGrant: unknown; branchId: unknown;
   perPaymentCapMicro: unknown; periodCapMicro: unknown; recipients: unknown;
   teeToken: string;
-}): Promise<{ grantAddress: string; observation: ManagerGrantObservation; next: OnboardingStep }> {
+}): Promise<{ grantAddress: string; scopeAddress: string;
+  observation: ManagerGrantObservation; next: OnboardingStep }> {
   if (!args.teeToken) throw new Error("Finance TEE auth token required");
   const company = new PublicKey(asAddress(args.company, "company"));
   const founder = asAddress(args.founder, "founder");
   const finance = asAddress(args.finance, "finance");
   const manager = new PublicKey(asAddress(args.manager, "manager"));
   const parentAddress = asAddress(args.parentGrant, "parentGrant");
-  const scope = new PublicKey(asAddress(args.scope, "scope"));
+  if (typeof args.branchId !== "number") throw new Error("branchId must be a number");
+  const scope = branchScopeAddress(company, args.branchId);
   if (typeof args.grantId !== "string" || !/^\d+$/.test(args.grantId) ||
       BigInt(args.grantId) > (1n << 64n) - 1n) throw new Error("grantId must be a u64 decimal string");
   const id = new anchor.BN(args.grantId);
@@ -133,5 +136,6 @@ export async function inspectManagerGrant(args: {
       confirmedOnboardingStep(company.toBase58(), grant.toBase58(), "initGrantPermission"),
     privateReady: data?.private_ready === true, active: data?.active === true,
   };
-  return { grantAddress: grant.toBase58(), observation, next: nextManagerGrantStep(observation) };
+  return { grantAddress: grant.toBase58(), scopeAddress: scope.toBase58(),
+    observation, next: nextManagerGrantStep(observation) };
 }

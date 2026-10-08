@@ -534,6 +534,250 @@
       "args": []
     },
     {
+      "name": "activate_member_grant_privacy",
+      "docs": [
+        "Founder issues a private, non-spending role for a requester or viewer."
+      ],
+      "discriminator": [
+        98,
+        84,
+        10,
+        172,
+        226,
+        128,
+        50,
+        234
+      ],
+      "accounts": [
+        {
+          "name": "founder",
+          "signer": true,
+          "relations": [
+            "policy"
+          ]
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  112,
+                  97,
+                  110,
+                  121,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.founder",
+                "account": "CompanyPolicy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "grant",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  97,
+                  109,
+                  45,
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "grant.company",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.grantor",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.member",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.id",
+                "account": "TeamGrant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "grant"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "policy_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "activate_privacy",
       "docs": [
         "Make state private to Founder and Finance. The CPI and readiness flag",
@@ -765,6 +1009,49 @@
                 "kind": "account",
                 "path": "request.id",
                 "account": "PaymentRequest"
+              }
+            ]
+          }
+        },
+        {
+          "name": "requester_grant",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  97,
+                  109,
+                  45,
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.company",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.grantor",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.member",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.id",
+                "account": "TeamGrant"
               }
             ]
           }
@@ -4541,6 +4828,251 @@
       "args": []
     },
     {
+      "name": "restore_policy_readers",
+      "docs": [
+        "Founder repairs or refreshes the company policy ACL from one active",
+        "Finance grant after grant rotation. It cannot revive a revoked grant."
+      ],
+      "discriminator": [
+        29,
+        234,
+        85,
+        68,
+        254,
+        166,
+        174,
+        168
+      ],
+      "accounts": [
+        {
+          "name": "founder",
+          "signer": true,
+          "relations": [
+            "policy"
+          ]
+        },
+        {
+          "name": "policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  112,
+                  97,
+                  110,
+                  121,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.founder",
+                "account": "CompanyPolicy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "grant",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  97,
+                  109,
+                  45,
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "grant.company",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.grantor",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.member",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "grant.id",
+                "account": "TeamGrant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "grant"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "policy_permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "revoke_agent",
       "discriminator": [
         227,
@@ -5099,6 +5631,49 @@
           }
         },
         {
+          "name": "requester_grant",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  97,
+                  109,
+                  45,
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.company",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.grantor",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.member",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.id",
+                "account": "TeamGrant"
+              }
+            ]
+          }
+        },
+        {
           "name": "permission",
           "writable": true,
           "pda": {
@@ -5184,6 +5759,245 @@
         },
         {
           "name": "manager",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "set_request_readers_v2",
+      "docs": [
+        "Founder can grant a Viewer access or remove a departed requester's read",
+        "access while keeping payment authority unchanged."
+      ],
+      "discriminator": [
+        31,
+        165,
+        27,
+        61,
+        40,
+        189,
+        156,
+        150
+      ],
+      "accounts": [
+        {
+          "name": "founder",
+          "signer": true,
+          "relations": [
+            "policy"
+          ]
+        },
+        {
+          "name": "policy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  112,
+                  97,
+                  110,
+                  121,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.founder",
+                "account": "CompanyPolicy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "request",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  97,
+                  121,
+                  109,
+                  101,
+                  110,
+                  116,
+                  45,
+                  114,
+                  101,
+                  113,
+                  117,
+                  101,
+                  115,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "request.company",
+                "account": "PaymentRequest"
+              },
+              {
+                "kind": "account",
+                "path": "request.requester",
+                "account": "PaymentRequest"
+              },
+              {
+                "kind": "account",
+                "path": "request.id",
+                "account": "PaymentRequest"
+              }
+            ]
+          }
+        },
+        {
+          "name": "viewer_grant",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  97,
+                  109,
+                  45,
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "viewer_grant.company",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "viewer_grant.grantor",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "viewer_grant.member",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "viewer_grant.id",
+                "account": "TeamGrant"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "request"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "include_requester",
+          "type": "bool"
+        },
+        {
+          "name": "include_finance",
+          "type": "bool"
+        },
+        {
+          "name": "manager",
+          "type": "pubkey"
+        },
+        {
+          "name": "viewer",
           "type": "pubkey"
         }
       ]
@@ -5388,6 +6202,37 @@
           ]
         },
         {
+          "name": "policy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  112,
+                  97,
+                  110,
+                  121,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.founder",
+                "account": "CompanyPolicy"
+              }
+            ]
+          }
+        },
+        {
           "name": "request",
           "writable": true,
           "pda": {
@@ -5425,6 +6270,49 @@
                 "kind": "account",
                 "path": "request.id",
                 "account": "PaymentRequest"
+              }
+            ]
+          }
+        },
+        {
+          "name": "requester_grant",
+          "optional": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  101,
+                  97,
+                  109,
+                  45,
+                  103,
+                  114,
+                  97,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.company",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.grantor",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.member",
+                "account": "TeamGrant"
+              },
+              {
+                "kind": "account",
+                "path": "requester_grant.id",
+                "account": "TeamGrant"
               }
             ]
           }

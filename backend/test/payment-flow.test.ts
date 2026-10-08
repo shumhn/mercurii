@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { Keypair } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
+import { branchScopeAddress, requestBranchScope } from "../src/operations.ts";
 import { applyConfirmedReaderCleanup, getOrCreatePaymentFlow, nextPaymentFlowStep, recordedRequestReaders,
   type PaymentFlowObservation } from "../src/payment-flow.ts";
 
@@ -30,7 +31,7 @@ test("guided payment flow keeps recipient and amount out of its durable journal"
     assert.equal(statSync(file).mode & 0o777, 0o600);
     const disk = JSON.parse(readFileSync(file, "utf8")) as { flows: Array<Record<string, unknown>> };
     assert.deepEqual(Object.keys(disk.flows[0]!).sort(),
-      ["company", "createdAt", "includeFinance", "manager", "paymentId", "request", "requestId", "requester", "termsHash"].sort());
+      ["branchId", "company", "createdAt", "includeFinance", "manager", "paymentId", "request", "requestId", "requester", "termsHash"].sort());
     assert.equal(readFileSync(file, "utf8").includes(recipient), false);
     assert.deepEqual(recordedRequestReaders(company).get(first.flow.request),
       { requester, includeFinance: true, manager: null });
@@ -68,4 +69,26 @@ test("guided payment flow never writes payment terms before private request acce
   assert.equal(nextPaymentFlowStep({ ...ready, privateReady: false }, flow, founder).actor, founder);
   assert.equal(nextPaymentFlowStep({ ...ready, status: "empty" }, flow, founder).actor, requester);
   assert.equal(nextPaymentFlowStep({ ...ready, status: "approved" }, flow, founder).status, "ready_to_execute");
+});
+
+test("Manager payment ID binds the request to its branch scope", () => {
+  const directory = mkdtempSync(join(tmpdir(), "mercury-branch-flow-"));
+  const previous = process.env.MERCURY_PAYMENT_FLOW_JOURNAL;
+  process.env.MERCURY_PAYMENT_FLOW_JOURNAL = join(directory, "flows.json");
+  try {
+    const company = Keypair.generate().publicKey.toBase58();
+    const body = { requester: Keypair.generate().publicKey.toBase58(),
+      recipient: Keypair.generate().publicKey.toBase58(), amountMicro: 42,
+      manager: Keypair.generate().publicKey.toBase58(), branchId: 73 };
+    const { flow } = getOrCreatePaymentFlow(randomUUID(), company, body);
+    assert.equal(Number(BigInt(flow.requestId) >> 40n), 73);
+    assert.equal(requestBranchScope(new PublicKey(company), flow.requestId).toBase58(),
+      branchScopeAddress(new PublicKey(company), 73).toBase58());
+    assert.throws(() => getOrCreatePaymentFlow(randomUUID(), company, { ...body, branchId: undefined }),
+      /Manager payments require branchId/);
+  } finally {
+    if (previous === undefined) delete process.env.MERCURY_PAYMENT_FLOW_JOURNAL;
+    else process.env.MERCURY_PAYMENT_FLOW_JOURNAL = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
