@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { Connection } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
+import { inspectCompanyOnboarding } from "./onboarding.ts";
 import {
   DEVNET_USDC, asAddress, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
@@ -51,6 +52,32 @@ createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
       return reply(res, 200, { ok: true, companyAddress, programId: PROGRAM_ID.toBase58() });
+    }
+    if (req.method === "POST" && req.url === "/v1/onboarding/next") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      if (process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Onboarding currently requires a Circle devnet USDC company" });
+      }
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== founderAddress) throw new Error("Founder must run company onboarding");
+      const result = await inspectCompanyOnboarding({
+        company: companyAddress, founder: founderAddress, finance: body.finance,
+        mint: process.env.MERCURY_COMPANY_MINT,
+        monthlyLimitMicro: body.monthlyLimitMicro, agentCapMicro: body.agentCapMicro,
+        teeToken: token,
+      });
+      if (result.next.status !== "build") return reply(res, 200, result);
+      const input: Record<string, unknown> = {
+        operation: result.next.operation, actor,
+        finance: body.finance, mint: process.env.MERCURY_COMPANY_MINT,
+        monthlyLimitMicro: body.monthlyLimitMicro, agentCapMicro: body.agentCapMicro,
+      };
+      const transaction = await buildOperation(input as { operation: string; actor: string }, {
+        company: companyAddress, founder: founderAddress, teeToken: token,
+      });
+      return reply(res, 200, { ...result, transaction });
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });
