@@ -4,3 +4,4 @@
 *.keypair.json
 *.secret.json
 /backend/node_modules/
+/backend/.state/
