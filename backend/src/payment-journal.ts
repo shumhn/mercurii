@@ -98,6 +98,26 @@ export function preparePayment(id: unknown, company: string, actorInput: string,
   return record;
 }
 
+export function abandonPreparedPayment(id: unknown, company: string, now = Date.now()): PaymentRecord {
+  const journal = readJournal();
+  const record = journal.payments.find((item) => item.paymentId === paymentId(id) && item.company === company);
+  if (!record) throw new Error("Unknown payment ID");
+  if (record.state !== "prepared" || record.signature !== null) {
+    throw new Error("Only an unsigned prepared payment can be rebuilt");
+  }
+  const updatedAt = Date.parse(record.updatedAt);
+  if (!Number.isFinite(updatedAt) || !Number.isFinite(now)) throw new Error("Invalid payment preparation time");
+  if (now - updatedAt < 60_000) {
+    throw new Error("Wait one minute before rebuilding an unsigned payment");
+  }
+  record.actor = null;
+  record.preparedMessageHash = null;
+  record.state = "registered";
+  record.updatedAt = new Date(now).toISOString();
+  saveJournal(journal);
+  return record;
+}
+
 export function bindSignedPayment(id: unknown, company: string, signedTransactionBase64: string): PaymentRecord {
   const journal = readJournal();
   const record = journal.payments.find((item) => item.paymentId === paymentId(id) && item.company === company);

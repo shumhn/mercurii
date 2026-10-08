@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Keypair, SystemProgram, Transaction } from "@solana/web3.js";
-import { bindSignedPayment, getPayment, preparePayment, reconcilePayment, registerPayment } from "../src/payment-journal.ts";
+import { abandonPreparedPayment, bindSignedPayment, getPayment, preparePayment, reconcilePayment, registerPayment } from "../src/payment-journal.ts";
 
 test("payment journal binds one opaque ID to one request and one signed execution", () => {
   const directory = mkdtempSync(join(tmpdir(), "mercury-payment-"));
@@ -82,6 +82,36 @@ test("failed chain signature can prepare a replacement only after reconciliation
     assert.throws(() => preparePayment(id, company, company, tx.serialize().toString("base64")), /already has/);
     assert.equal(reconcilePayment(id, company, "approved", "failed").state, "failed");
     assert.equal(preparePayment(id, company, company, tx.serialize().toString("base64")).state, "prepared");
+  } finally {
+    if (previous === undefined) delete process.env.MERCURY_PAYMENT_JOURNAL;
+    else process.env.MERCURY_PAYMENT_JOURNAL = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("an unsigned payout can be rebuilt after a restart without resetting submitted or settled payouts", () => {
+  const directory = mkdtempSync(join(tmpdir(), "mercury-rebuild-"));
+  const previous = process.env.MERCURY_PAYMENT_JOURNAL;
+  process.env.MERCURY_PAYMENT_JOURNAL = join(directory, "payments.json");
+  try {
+    const actor = Keypair.generate();
+    const company = actor.publicKey.toBase58();
+    const id = randomUUID();
+    registerPayment({ paymentId: id, company, request: Keypair.generate().publicKey.toBase58(),
+      requester: company, requestId: "9" });
+    const tx = new Transaction().add(SystemProgram.transfer({
+      fromPubkey: actor.publicKey, toPubkey: Keypair.generate().publicKey, lamports: 1,
+    }));
+    tx.feePayer = actor.publicKey;
+    tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
+    const unsigned = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+    const prepared = preparePayment(id, company, company, unsigned);
+    assert.throws(() => abandonPreparedPayment(id, company, Date.parse(prepared.updatedAt) + 59_999), /Wait one minute/);
+    assert.equal(abandonPreparedPayment(id, company, Date.parse(prepared.updatedAt) + 60_000).state, "registered");
+    assert.equal(preparePayment(id, company, company, unsigned).state, "prepared");
+    tx.sign(actor);
+    bindSignedPayment(id, company, tx.serialize().toString("base64"));
+    assert.throws(() => abandonPreparedPayment(id, company, Date.now() + 120_000), /Only an unsigned/);
   } finally {
     if (previous === undefined) delete process.env.MERCURY_PAYMENT_JOURNAL;
     else process.env.MERCURY_PAYMENT_JOURNAL = previous;

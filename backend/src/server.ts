@@ -14,7 +14,7 @@ import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
-import { bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
+import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import { createPayrollRun, getPayrollRun } from "./payroll-run.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
   getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
@@ -797,7 +797,7 @@ createServer(async (req, res) => {
       return reply(res, 200, { payments: rows, unavailableCount,
         snapshotUpdatedSlot: snapshot?.updatedSlot ?? null });
     }
-    const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync))?$/);
+    const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync|rebuild))?$/);
     if (paymentJob && req.method === "GET" && !paymentJob[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -874,6 +874,16 @@ createServer(async (req, res) => {
       const plan = await executionPlan(record.request, actor, body.grant, token);
       const prepared = preparePayment(id, companyAddress, actor, plan.transaction.transactionBase64);
       return reply(res, 200, { record: prepared, ...plan });
+    }
+    if (paymentJob && req.method === "POST" && paymentJob[2] === "rebuild") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const id = paymentId(paymentJob[1]);
+      const record = getPayment(id, companyAddress);
+      const request = await readPaymentRequest(companyAddress, record.request, token);
+      if (request.status !== "approved") throw new Error("Payment must still be approved before rebuilding");
+      return reply(res, 200, { record: abandonPreparedPayment(id, companyAddress),
+        next: `/v1/payment-jobs/${id}/prepare` });
     }
     if (paymentJob && req.method === "POST" && paymentJob[2] === "submit") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
