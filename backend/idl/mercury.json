@@ -850,6 +850,10 @@
       ],
       "args": [
         {
+          "name": "include_finance",
+          "type": "bool"
+        },
+        {
           "name": "manager",
           "type": "pubkey"
         }
@@ -1262,7 +1266,12 @@
           "address": "Magic11111111111111111111111111111111111111"
         }
       ],
-      "args": []
+      "args": [
+        {
+          "name": "include_finance",
+          "type": "bool"
+        }
+      ]
     },
     {
       "name": "agent_pay",

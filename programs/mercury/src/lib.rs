@@ -871,7 +871,10 @@ pub mod mercury {
         Ok(())
     }
 
-    pub fn activate_snapshot_privacy(ctx: Context<ActivateSnapshotPrivacy>) -> Result<()> {
+    pub fn activate_snapshot_privacy(
+        ctx: Context<ActivateSnapshotPrivacy>,
+        include_finance: bool,
+    ) -> Result<()> {
         require!(
             ctx.accounts.policy.private_ready,
             MercuryError::PrivacyNotActive
@@ -888,6 +891,16 @@ pub mod mercury {
         let bump = [ctx.bumps.snapshot];
         let seeds: &[&[u8]] = &[SNAPSHOT_SEED, ctx.accounts.snapshot.company.as_ref(), &bump];
         let flags = TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG;
+        let mut members = vec![Member {
+            flags,
+            pubkey: ctx.accounts.policy.founder,
+        }];
+        if include_finance && ctx.accounts.policy.finance != ctx.accounts.policy.founder {
+            members.push(Member {
+                flags,
+                pubkey: ctx.accounts.policy.finance,
+            });
+        }
         UpdateEphemeralPermissionCpi {
             payer: ctx.accounts.snapshot.to_account_info(),
             permissioned_account: ctx.accounts.snapshot.to_account_info(),
@@ -899,16 +912,7 @@ pub mod mercury {
             authority_is_signer: false,
             args: EphemeralMembersArgs {
                 is_private: true,
-                members: vec![
-                    Member {
-                        flags,
-                        pubkey: ctx.accounts.policy.founder,
-                    },
-                    Member {
-                        flags,
-                        pubkey: ctx.accounts.policy.finance,
-                    },
-                ],
+                members,
             },
         }
         .invoke_signed(&[&seeds])?;
@@ -1117,6 +1121,7 @@ pub mod mercury {
     /// readiness flag are atomic; later private data writes require the flag.
     pub fn activate_request_privacy(
         ctx: Context<ActivateRequestPrivacy>,
+        include_finance: bool,
         manager: Pubkey,
     ) -> Result<()> {
         require!(
@@ -1142,25 +1147,28 @@ pub mod mercury {
             &bump,
         ];
         let flags = TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG;
-        let mut members = vec![
-            Member {
-                flags,
-                pubkey: ctx.accounts.policy.founder,
-            },
-            Member {
-                flags,
-                pubkey: ctx.accounts.policy.finance,
-            },
-            Member {
+        let mut members = vec![Member {
+            flags,
+            pubkey: ctx.accounts.policy.founder,
+        }];
+        if ctx.accounts.request.requester != ctx.accounts.policy.founder {
+            members.push(Member {
                 flags,
                 pubkey: ctx.accounts.request.requester,
-            },
-        ];
+            });
+        }
+        if include_finance
+            && ctx.accounts.policy.finance != ctx.accounts.policy.founder
+            && ctx.accounts.policy.finance != ctx.accounts.request.requester
+        {
+            members.push(Member {
+                flags,
+                pubkey: ctx.accounts.policy.finance,
+            });
+        }
         if manager != Pubkey::default() {
             require!(
-                manager != ctx.accounts.policy.founder
-                    && manager != ctx.accounts.policy.finance
-                    && manager != ctx.accounts.request.requester,
+                !members.iter().any(|member| member.pubkey == manager),
                 MercuryError::DuplicateMember
             );
             members.push(Member {

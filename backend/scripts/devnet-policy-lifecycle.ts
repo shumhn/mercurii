@@ -172,7 +172,7 @@ async function main(): Promise<void> {
   }
   let requestState = await (erProgram.account as any).paymentRequest.fetch(request);
   if (!requestState.privateReady) {
-    const tx = await erProgram.methods.activateRequestPrivacy(PublicKey.default).accountsPartial({
+    const tx = await erProgram.methods.activateRequestPrivacy(true, PublicKey.default).accountsPartial({
       ...requestAccounts, founder: founder.publicKey, policy,
     }).transaction();
     process.stdout.write(`activate_request_privacy: ${await sendEr(erProvider, tx)}\n`);

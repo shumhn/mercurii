@@ -39,3 +39,24 @@ test("Finance and Manager approval instructions carry distinct grant accounts", 
   assert.ok(managerApproval.keys[3]!.pubkey.equals(managerGrant));
   assert.ok(managerApproval.keys[4]!.pubkey.equals(grant));
 });
+
+test("privacy activation encodes Founder-only readers for a revoked Finance member", async () => {
+  const requestPermission = Keypair.generate().publicKey;
+  const accounts = {
+    founder: actor, policy: company, request,
+    permission: requestPermission, ephemeralVault: requestPermission,
+    magicProgram: requestPermission, permissionProgram: requestPermission,
+  };
+  const requestInstruction = await program.methods.activateRequestPrivacy(false, anchor.web3.PublicKey.default)
+    .accountsPartial(accounts).instruction();
+  const snapshotInstruction = await program.methods.activateSnapshotPrivacy(false)
+    .accountsPartial({ founder: actor, policy: company, snapshot: request,
+      permission: requestPermission, ephemeralVault: requestPermission,
+      magicProgram: requestPermission, permissionProgram: requestPermission }).instruction();
+  assert.ok(requestInstruction.data.equals(program.coder.instruction.encode("activateRequestPrivacy", {
+    includeFinance: false, manager: anchor.web3.PublicKey.default,
+  })));
+  assert.ok(snapshotInstruction.data.equals(program.coder.instruction.encode("activateSnapshotPrivacy", {
+    includeFinance: false,
+  })));
+});

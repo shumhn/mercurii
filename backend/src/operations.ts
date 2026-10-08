@@ -284,7 +284,8 @@ export async function buildOperation(input: BuildInput, config: {
     }
     case "activateSnapshotPrivacy": {
       const snapshot = snapshotAddress(company);
-      tx = await program.methods.activateSnapshotPrivacy().accountsPartial({ founder: actor, policy: company, snapshot, ...aclAccounts(snapshot) }).transaction();
+      tx = await program.methods.activateSnapshotPrivacy(input.includeFinance !== false)
+        .accountsPartial({ founder: actor, policy: company, snapshot, ...aclAccounts(snapshot) }).transaction();
       break;
     }
     case "setSnapshotReaders": {
@@ -402,7 +403,9 @@ export async function buildOperation(input: BuildInput, config: {
     }
     case "activateRequestPrivacy": {
       const request = pub(input.request, "request");
-      tx = await program.methods.activateRequestPrivacy(input.manager ? pub(input.manager, "manager") : PublicKey.default)
+      tx = await program.methods.activateRequestPrivacy(
+        input.includeFinance !== false, input.manager ? pub(input.manager, "manager") : PublicKey.default,
+      )
         .accountsPartial({ founder: actor, policy: company, request, ...aclAccounts(request) }).transaction();
       break;
     }

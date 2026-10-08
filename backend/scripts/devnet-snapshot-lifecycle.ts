@@ -78,7 +78,7 @@ if (!(await founderEr.getAccountInfo(permission))) {
 }
 let state = await (founderProgram.account as any).treasurySnapshot.fetch(snapshot);
 if (!state.privateReady) {
-  const tx = await founderProgram.methods.activateSnapshotPrivacy().accountsPartial({ ...acl, policy: company }).transaction();
+  const tx = await founderProgram.methods.activateSnapshotPrivacy(true).accountsPartial({ ...acl, policy: company }).transaction();
   process.stdout.write(`activate_snapshot_privacy: ${await send(founderProvider, tx)}\n`);
 }
 
