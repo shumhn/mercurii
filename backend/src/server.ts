@@ -4,6 +4,7 @@ import { BN } from "@coral-xyz/anchor";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
+import { inspectManagerGrant } from "./manager-onboarding.ts";
 import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
@@ -65,7 +66,9 @@ async function executionPlan(requestAddress: string, actor: string, grantInput: 
   const grantAddress = actor === policy.founder ? null : asAddress(grantInput, "grant");
   if (grantAddress) {
     const grant = await readTeamGrant(companyAddress, grantAddress, token);
-    if (grant.member !== actor || grant.role !== 1 || grant.active !== true ||
+    if (grant.member !== actor || actor !== policy.finance || grant.grantor !== policy.founder ||
+        grant.parent !== PublicKey.default.toBase58() || grant.role !== 1 ||
+        grant.active !== true || grant.revoked !== false ||
         !Array.isArray(grant.recipients) || !grant.recipients.includes(accounts.recipient) ||
         BigInt(accounts.amountMicro) > BigInt(String(grant.perPaymentCapMicro))) {
       throw new Error("Finance grant does not allow this payment");
@@ -112,8 +115,14 @@ async function approvalPlan(requestAddress: string, actor: string, grantInput: u
       if (grant.parent !== parentGrantAddress) throw new Error("Manager grant has a different parent");
       const parent = await readTeamGrant(companyAddress, parentGrantAddress, token);
       if (parent.member !== grant.grantor || parent.member !== policy.finance || parent.active !== true ||
+          parent.grantor !== policy.founder || parent.parent !== PublicKey.default.toBase58() ||
           parent.revoked !== false || parent.role !== 1 || parent.mayDelegate !== true) {
         throw new Error("Parent Finance grant does not authorize Manager approval");
+      }
+      if (BigInt(String(grant.perPaymentCapMicro)) > BigInt(String(parent.perPaymentCapMicro)) ||
+          BigInt(String(grant.periodCapMicro)) > BigInt(String(parent.periodCapMicro)) ||
+          !(parent.recipients as string[]).includes(request.recipient as string)) {
+        throw new Error("Manager grant exceeds its active parent Finance scope");
       }
     } else {
       throw new Error("Grant role cannot approve payments");
@@ -191,6 +200,32 @@ createServer(async (req, res) => {
         grant: result.grantAddress, role: "finance", parentGrant: null,
         perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro,
         recipients: body.recipients, mayDelegate: body.mayDelegate,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = recordOnboardingBuild({
+        company: companyAddress, target: result.grantAddress,
+        operation: result.next.operation!, chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64,
+      });
+      return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
+    }
+    if (req.method === "POST" && req.url === "/v1/onboarding/manager-grant/next") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Finance TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== asAddress(body.finance, "finance")) throw new Error("Finance must issue the Manager grant");
+      const result = await inspectManagerGrant({
+        company: companyAddress, founder: founderAddress, finance: actor,
+        manager: body.manager, grantId: body.grantId, parentGrant: body.parentGrant,
+        scope: body.scope, perPaymentCapMicro: body.perPaymentCapMicro,
+        periodCapMicro: body.periodCapMicro, recipients: body.recipients, teeToken: token,
+      });
+      if (result.next.status !== "build") return reply(res, 200, result);
+      const transaction = await buildOperation({
+        operation: result.next.operation!, actor, member: body.manager, grantId: body.grantId,
+        grant: result.grantAddress, role: "manager", parentGrant: body.parentGrant, scope: body.scope,
+        perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro,
+        recipients: body.recipients, mayDelegate: false,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
       const receipt = recordOnboardingBuild({
         company: companyAddress, target: result.grantAddress,
