@@ -16,6 +16,7 @@ import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import { createPayrollRun, getPayrollRun, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
+import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payroll-approval.ts";
 import { previewPayrollCsv } from "./payroll-roster.ts";
 import { deactivatePayee, linkPaymentPayee, listPayees, matchPayee, paymentPayee, registerPayee } from "./payee-journal.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
@@ -688,16 +689,18 @@ createServer(async (req, res) => {
       if (statuses.every((status) => status === "approved" || status === "executed")) {
         return reply(res, 200, { status: "ready", runId: run.runId });
       }
-      if (!statuses.every((status) => status === "submitted")) {
-        throw new Error("Every payroll item must be submitted before one-signature approval");
+      if (!statuses.every((status) => ["submitted", "approved", "executed"].includes(status))) {
+        throw new Error("Every payroll item must be submitted before approving the run");
       }
-      const previous = latestOnboardingReceipt(companyAddress, run.runId, "payrollApprove");
+      const pending = run.items.filter((_, index) => statuses[index] === "submitted");
+      const operation = `payrollApprove:${pending[0]!.paymentId}`;
+      const previous = latestOnboardingReceipt(companyAddress, run.runId, operation);
       if (previous && (previous.status === "confirmed" ||
           ((previous.status === "built" || previous.status === "pending") && waitForCleanupReceipt(previous)))) {
         return reply(res, 200, { status: "wait", receiptId: previous.id, receiptStatus: previous.status });
       }
       const approvals = [];
-      for (const item of run.items) {
+      for (const item of pending.slice(0, MAX_APPROVALS_PER_TRANSACTION)) {
         const plan = await approvalPlan(item.request, actor, body.grant, body.parentGrant, token);
         const transaction = Transaction.from(Buffer.from(plan.transaction.transactionBase64, "base64"));
         if (transaction.instructions.length !== 1) throw new Error("Unexpected payroll approval instruction count");
@@ -706,12 +709,11 @@ createServer(async (req, res) => {
       const endpoint = new URL(TEE_RPC);
       endpoint.searchParams.set("token", token);
       const blockhash = (await new Connection(endpoint.toString(), "confirmed").getLatestBlockhash()).blockhash;
-      const batch = new Transaction({ feePayer: new PublicKey(actor), recentBlockhash: blockhash });
-      for (const instruction of approvals) batch.add(instruction);
-      const transactionBase64 = batch.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+      const { transactionBase64, itemCount } = buildPayrollApprovalChunk({ actor, blockhash, instructions: approvals });
       const receipt = recordOnboardingBuild({ company: companyAddress, target: run.runId,
-        operation: "payrollApprove", chain: "ephemeral", transactionBase64 });
+        operation, chain: "ephemeral", transactionBase64 });
       return reply(res, 200, { status: "build", runId: run.runId, receiptId: receipt.id,
+        itemCount, remainingAfterConfirmation: pending.length - itemCount,
         transaction: { status: "unsigned", operation: "approvePayroll", transactionBase64,
           requiredSigners: [actor], sendTo: "ephemeral", sendRpcEndpoint: TEE_RPC } });
     }

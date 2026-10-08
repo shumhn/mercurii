@@ -12,7 +12,7 @@ test("payroll CSV preview parses quoted names and exact USDC micro amounts", () 
   assert.equal(preview.items[0]?.label, "A, Person");
   assert.equal(preview.items[0]?.amountMicro, 12_345_678);
   assert.equal(preview.totalMicro, "12345679");
-  assert.equal(preview.canCreateSmallRun, true);
+  assert.equal(preview.canCreateRun, true);
 });
 
 test("payroll CSV reports invalid and duplicate rows before any run is created", () => {
@@ -21,7 +21,7 @@ test("payroll CSV reports invalid and duplicate rows before any run is created",
   assert.equal(preview.items.length, 1);
   assert.equal(preview.errors.length, 2);
   assert.deepEqual(preview.errors.map((error) => error.row), [3, 4]);
-  assert.equal(preview.canCreateSmallRun, false);
+  assert.equal(preview.canCreateRun, false);
   assert.throws(() => previewPayrollCsv("wallet,name\nabc,A"), /amount_usdc/);
   assert.throws(() => previewPayrollCsv('wallet,amount_usdc\n"unterminated,1'), /Unclosed/);
 });

@@ -8,7 +8,9 @@ import { paymentId } from "./payment-journal.ts";
 
 const DEFAULT_PATH = new URL("../.state/payroll-runs.json", import.meta.url).pathname;
 const path = () => process.env.MERCURY_PAYROLL_JOURNAL ?? DEFAULT_PATH;
-const MAX_ITEMS = 4; // One small run fits in one PER approval transaction.
+// Bound one HTTP request and its local journal work; approval is split into
+// several Solana transactions when the roster cannot fit in one.
+const MAX_ROSTER_ITEMS = 100;
 
 export type PayrollItem = { paymentId: string; request: string; requester: string; requestId: string };
 export type PayrollRun = {
@@ -57,8 +59,8 @@ export function createPayrollRun(runIdInput: unknown, companyInput: unknown, inp
   const runId = paymentId(runIdInput);
   const company = asAddress(companyInput, "company");
   const requester = asAddress(input.requester, "requester");
-  if (!Array.isArray(input.items) || input.items.length < 2 || input.items.length > MAX_ITEMS) {
-    throw new Error(`Payroll run requires 2 to ${MAX_ITEMS} employees`);
+  if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > MAX_ROSTER_ITEMS) {
+    throw new Error(`Payroll run requires 1 to ${MAX_ROSTER_ITEMS} employees`);
   }
   const rows = input.items.map((item, index) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`Invalid employee at index ${index}`);
@@ -128,5 +130,8 @@ export function summarizePayroll(items: PayrollProgressItem[]) {
     failedMicro: failed.toString(), pendingMicro: pending.toString(),
     settledCount, failedCount, pendingCount: items.length - settledCount - failedCount,
     unsubmittedCount: items.filter((item) => item.amountMicro === null).length,
-    retryablePaymentIds, readyToApprove: items.every((item) => item.requestStatus === "submitted") };
+    retryablePaymentIds,
+    approvalPendingCount: items.filter((item) => item.requestStatus === "submitted").length,
+    readyToApprove: items.some((item) => item.requestStatus === "submitted") &&
+      items.every((item) => ["submitted", "approved", "executed"].includes(item.requestStatus)) };
 }

@@ -115,7 +115,7 @@ try {
   const csvText = `wallet,amount_usdc\n${recipients[0]!.publicKey.toBase58()},0.000001\n` +
     `${recipients[1]!.publicKey.toBase58()},0.000001\n`;
   const preview = await api("/v1/payroll-runs/preview", { csvText });
-  assert.equal(preview.canCreateSmallRun, true);
+  assert.equal(preview.canCreateRun, true);
   assert.equal(preview.totalMicro, "2");
   assert.equal(preview.budgetCoversValidRows, true);
   const roster = { runId, requester: founder.publicKey.toBase58(),

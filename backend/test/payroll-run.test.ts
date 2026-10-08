@@ -44,8 +44,12 @@ test("payroll run binds employee items once without persisting salaries or recip
     ] }), /different employees or amounts/);
     assert.throws(() => createPayrollRun(randomUUID(), company, { requester,
       items: [input.items[0], input.items[0]] }), /only once/);
+    const five = Array.from({ length: 5 }, () => ({
+      recipient: Keypair.generate().publicKey.toBase58(), amountMicro: 1,
+    }));
+    assert.equal(createPayrollRun(randomUUID(), company, { requester, items: five }).items.length, 5);
     assert.throws(() => createPayrollRun(randomUUID(), company, { requester,
-      items: [input.items[0]] }), /2 to 4/);
+      items: [] }), /1 to 100/);
     const pda = PublicKey.findProgramAddressSync([Buffer.from("employee")], Keypair.generate().publicKey)[0];
     assert.throws(() => createPayrollRun(randomUUID(), company, { requester,
       items: [input.items[0], { recipient: pda.toBase58(), amountMicro: 1 }] }), /wallet owner/);
@@ -73,6 +77,7 @@ test("payroll progress only retries failed approved items and keeps amounts bala
   assert.deepEqual(summary.retryablePaymentIds, [items[1]!.paymentId]);
   assert.equal(summary.pendingCount, 2);
   assert.equal(summary.unsubmittedCount, 1);
+  assert.equal(summary.approvalPendingCount, 0);
   assert.equal(payrollNextAction(items[2]!), "reconcile_or_resend_same_signature");
   assert.equal(payrollNextAction(items[0]!), "complete");
 });

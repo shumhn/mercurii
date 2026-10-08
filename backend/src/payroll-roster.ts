@@ -3,7 +3,7 @@ import { asAddress } from "./magicblock.ts";
 
 export type RosterIssue = { row: number | null; message: string };
 export type RosterItem = { row: number; recipient: string; amountMicro: number; label: string | null };
-export type RosterPreview = { items: RosterItem[]; errors: RosterIssue[]; totalMicro: string; canCreateSmallRun: boolean };
+export type RosterPreview = { items: RosterItem[]; errors: RosterIssue[]; totalMicro: string; canCreateRun: boolean };
 
 function csvRows(text: string): string[][] {
   const rows: string[][] = [];
@@ -97,5 +97,5 @@ export function previewPayrollCsv(input: unknown): RosterPreview {
     items.push({ row: rowNumber, recipient, amountMicro: Number(micro), label });
   }
   return { items, errors, totalMicro: total.toString(),
-    canCreateSmallRun: errors.length === 0 && items.length >= 2 && items.length <= 4 };
+    canCreateRun: errors.length === 0 && items.length >= 1 && items.length <= 100 };
 }
