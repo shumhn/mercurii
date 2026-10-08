@@ -55,6 +55,13 @@ export function getPayrollRun(runIdInput: unknown, companyInput: unknown): Payro
   return run;
 }
 
+export function listPayrollRuns(companyInput: unknown): Array<Pick<PayrollRun, "runId" | "createdAt"> & { itemCount: number }> {
+  const company = asAddress(companyInput, "company");
+  return readJournal().runs.filter((run) => run.company === company).reverse().map((run) => ({
+    runId: run.runId, createdAt: run.createdAt, itemCount: run.items.length,
+  }));
+}
+
 export function createPayrollRun(runIdInput: unknown, companyInput: unknown, input: Record<string, unknown>): PayrollRun {
   const runId = paymentId(runIdInput);
   const company = asAddress(companyInput, "company");

@@ -121,6 +121,7 @@ try {
   const roster = { runId, requester: founder.publicKey.toBase58(),
     items: preview.items.map((item: any) => ({ recipient: item.recipient, amountMicro: item.amountMicro })) };
   const run = await api("/v1/payroll-runs", roster);
+  assert.equal((await api("/v1/payroll-runs")).runs.some((entry: { runId: string }) => entry.runId === runId), true);
   assert.equal(run.items.length, 2);
   assert.deepEqual((await api("/v1/payroll-runs", roster)).items, run.items);
   for (const [index, item] of run.items.entries()) {

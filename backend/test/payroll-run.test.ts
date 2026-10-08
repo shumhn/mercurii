@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { createPayrollRun, getPayrollRun, payrollNextAction, summarizePayroll } from "../src/payroll-run.ts";
+import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, summarizePayroll } from "../src/payroll-run.ts";
 import { getPaymentFlow } from "../src/payment-flow.ts";
 
 test("payroll run binds employee items once without persisting salaries or recipient wallets", () => {
@@ -31,6 +31,8 @@ test("payroll run binds employee items once without persisting salaries or recip
     assert.notEqual(run.items[0]!.paymentId, run.items[1]!.paymentId);
     assert.deepEqual(createPayrollRun(runId, company, input), run);
     assert.deepEqual(getPayrollRun(runId, company), run);
+    assert.deepEqual(listPayrollRuns(company), [{ runId, createdAt: run.createdAt, itemCount: 2 }]);
+    assert.deepEqual(listPayrollRuns(Keypair.generate().publicKey.toBase58()), []);
     for (const item of run.items) {
       assert.equal(getPaymentFlow(item.paymentId, company).request, item.request);
     }
@@ -48,6 +50,7 @@ test("payroll run binds employee items once without persisting salaries or recip
       recipient: Keypair.generate().publicKey.toBase58(), amountMicro: 1,
     }));
     assert.equal(createPayrollRun(randomUUID(), company, { requester, items: five }).items.length, 5);
+    assert.equal(listPayrollRuns(company)[0]?.itemCount, 5);
     assert.throws(() => createPayrollRun(randomUUID(), company, { requester,
       items: [] }), /1 to 100/);
     const pda = PublicKey.findProgramAddressSync([Buffer.from("employee")], Keypair.generate().publicKey)[0];

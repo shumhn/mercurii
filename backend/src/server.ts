@@ -15,7 +15,7 @@ import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
-import { createPayrollRun, getPayrollRun, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
+import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
 import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payroll-approval.ts";
 import { previewPayrollCsv } from "./payroll-roster.ts";
 import { deactivatePayee, linkPaymentPayee, listPayees, matchPayee, paymentPayee, registerPayee } from "./payee-journal.ts";
@@ -648,6 +648,15 @@ createServer(async (req, res) => {
         next: `/v1/payment-flows/${item.paymentId}/next`,
       })), approve: `/v1/payroll-runs/${run.runId}/approve`, status: `/v1/payroll-runs/${run.runId}` });
     }
+    if (req.method === "GET" && req.url === "/v1/payroll-runs") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      return reply(res, 200, { runs: listPayrollRuns(companyAddress).map((run) => ({
+        ...run, status: `/v1/payroll-runs/${run.runId}`,
+      })) });
+    }
     const payrollRun = req.url?.match(/^\/v1\/payroll-runs\/([^/?]+)(?:\/(approve))?$/);
     if (payrollRun && req.method === "GET" && !payrollRun[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -656,25 +665,28 @@ createServer(async (req, res) => {
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
       const items = [];
-      for (const item of run.items) {
-        const inspected = await inspectPaymentFlow(getPaymentFlow(item.paymentId, companyAddress), founderAddress, token);
-        const requestStatus = inspected.observation.status;
-        const privateRequest = inspected.observation.privateReady && requestStatus !== "empty"
-          ? await readPaymentRequest(companyAddress, item.request, token) : null;
-        const amountMicro = privateRequest ? String(privateRequest.amountMicro) : null;
-        let payment = null;
-        if (["approved", "executed", "rejected"].includes(requestStatus)) {
-          const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
-            request: item.request, requester: item.requester, requestId: item.requestId });
-          const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
-          payment = reconcilePayment(item.paymentId, companyAddress, requestStatus, chain?.status ?? null);
-        }
-        items.push({ paymentId: item.paymentId, request: item.request, requestStatus, amountMicro,
-          next: `/v1/payment-flows/${item.paymentId}/next`,
-          paymentJob: `/v1/payment-jobs/${item.paymentId}`, paymentState: payment?.state ?? null,
-          signature: payment?.signature ?? null,
-          nextAction: payrollNextAction({ paymentId: item.paymentId, requestStatus,
-            paymentState: payment?.state ?? null, amountMicro }) });
+      for (let offset = 0; offset < run.items.length; offset += 5) {
+        const batch = await Promise.all(run.items.slice(offset, offset + 5).map(async (item) => {
+          const inspected = await inspectPaymentFlow(getPaymentFlow(item.paymentId, companyAddress), founderAddress, token);
+          const requestStatus = inspected.observation.status;
+          const privateRequest = inspected.observation.privateReady && requestStatus !== "empty"
+            ? await readPaymentRequest(companyAddress, item.request, token) : null;
+          const amountMicro = privateRequest ? String(privateRequest.amountMicro) : null;
+          let payment = null;
+          if (["approved", "executed", "rejected"].includes(requestStatus)) {
+            const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
+              request: item.request, requester: item.requester, requestId: item.requestId });
+            const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
+            payment = reconcilePayment(item.paymentId, companyAddress, requestStatus, chain?.status ?? null);
+          }
+          return { paymentId: item.paymentId, request: item.request, requestStatus, amountMicro,
+            next: `/v1/payment-flows/${item.paymentId}/next`,
+            paymentJob: `/v1/payment-jobs/${item.paymentId}`, paymentState: payment?.state ?? null,
+            signature: payment?.signature ?? null,
+            nextAction: payrollNextAction({ paymentId: item.paymentId, requestStatus,
+              paymentState: payment?.state ?? null, amountMicro }) };
+        }));
+        items.push(...batch);
       }
       return reply(res, 200, { runId: run.runId, items, ...summarizePayroll(items) });
     }
