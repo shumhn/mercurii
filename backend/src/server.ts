@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { Connection } from "@solana/web3.js";
+import { BN } from "@coral-xyz/anchor";
+import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild } from "./onboarding-journal.ts";
@@ -8,13 +9,14 @@ import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
+import { bindSignedPayment, getPayment, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import {
   DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
 } from "./magicblock.ts";
 import {
   BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, agentPaymentAccounts, buildOperation,
-  paymentExecutionAccounts, paymentStatusFromRequest,
+  paymentExecutionAccounts, paymentRequestAddress, paymentStatusFromRequest,
   readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTeamGrant, readTreasurySnapshot,
 } from "./operations.ts";
 
@@ -51,6 +53,47 @@ async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> 
     throw new Error("Expected JSON object");
   }
   return parsed as Record<string, unknown>;
+}
+
+async function executionPlan(requestAddress: string, actor: string, grantInput: unknown, token: string) {
+  const [policy, request, snapshot] = await Promise.all([
+    readCompanyPolicy(companyAddress, token), readPaymentRequest(companyAddress, requestAddress, token),
+    readTreasurySnapshot(companyAddress, token).catch(() => null),
+  ]);
+  const accounts = paymentExecutionAccounts(companyAddress, actor, policy, request);
+  const grantAddress = actor === policy.founder ? null : asAddress(grantInput, "grant");
+  if (grantAddress) {
+    const grant = await readTeamGrant(companyAddress, grantAddress, token);
+    if (grant.member !== actor || grant.role !== 1 || grant.active !== true ||
+        !Array.isArray(grant.recipients) || !grant.recipients.includes(accounts.recipient) ||
+        BigInt(accounts.amountMicro) > BigInt(String(grant.perPaymentCapMicro))) {
+      throw new Error("Finance grant does not allow this payment");
+    }
+  }
+  const transaction = await buildOperation({
+    operation: "executePayment", actor, request: requestAddress, grant: grantAddress,
+    treasuryToken: accounts.treasuryToken, recipientToken: accounts.recipientToken,
+  }, { company: companyAddress, founder: founderAddress, teeToken: token });
+  const treasuryObservation = snapshot === null ? null : {
+    balanceMicro: snapshot.balanceMicro, updatedSlot: snapshot.updatedSlot,
+    coversPaymentAtLastSync: BigInt(snapshot.balanceMicro) >= BigInt(accounts.amountMicro),
+  };
+  return {
+    requestAddress, recipient: accounts.recipient, amountMicro: accounts.amountMicro,
+    treasuryObservation,
+    warning: treasuryObservation?.coversPaymentAtLastSync === false
+      ? "Last treasury snapshot is below this payment; fund and resync before signing" : null,
+    transaction,
+  };
+}
+
+async function paymentChainStatus(signature: string, token: string): Promise<"not_found" | "processed" | "confirmed" | "failed"> {
+  const endpoint = new URL(TEE_RPC);
+  endpoint.searchParams.set("token", token);
+  const status = (await new Connection(endpoint.toString(), "confirmed")
+    .getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
+  return status === null ? "not_found" : status.err ? "failed" :
+    status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized" ? "confirmed" : "processed";
 }
 
 createServer(async (req, res) => {
@@ -281,6 +324,85 @@ createServer(async (req, res) => {
       const request = decodeURIComponent(req.url.slice("/v1/payment-requests/".length));
       return reply(res, 200, await readPaymentRequest(companyAddress, request, token));
     }
+    if (req.method === "POST" && req.url === "/v1/payment-jobs") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const requestAddress = asAddress(body.request, "request");
+      const request = await readPaymentRequest(companyAddress, requestAddress, token);
+      const derived = paymentRequestAddress(new PublicKey(companyAddress),
+        new PublicKey(String(request.requester)), new BN(String(request.id)));
+      if (derived.toBase58() !== requestAddress) throw new Error("Request address does not match its private identity");
+      const record = registerPayment({ paymentId: body.paymentId, company: companyAddress,
+        request: requestAddress, requester: String(request.requester), requestId: String(request.id) });
+      return reply(res, 200, { record: reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
+        requestStatus: request.status });
+    }
+    const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit))?$/);
+    if (paymentJob && req.method === "GET" && !paymentJob[2]) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const id = paymentId(paymentJob[1]);
+      const record = getPayment(id, companyAddress);
+      const request = await readPaymentRequest(companyAddress, record.request, token);
+      const chainStatus = record.signature ? await paymentChainStatus(record.signature, token).catch(() => null) : null;
+      return reply(res, 200, { record: reconcilePayment(id, companyAddress, String(request.status), chainStatus),
+        requestStatus: request.status, chainStatus,
+        paymentSettled: request.status === "executed",
+        signatureLinked: chainStatus === "confirmed" && request.status === "executed",
+        chainStatusUnavailable: record.signature !== null && chainStatus === null,
+        integrityWarning: chainStatus === "confirmed" && request.status !== "executed"
+          ? "Execution signature confirmed without an executed private request; investigate before retrying" : null });
+    }
+    if (paymentJob && req.method === "POST" && paymentJob[2] === "prepare") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Payment execution requires the verified Circle devnet USDC token CPI flow" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const id = paymentId(paymentJob[1]);
+      const record = getPayment(id, companyAddress);
+      const request = await readPaymentRequest(companyAddress, record.request, token);
+      if (request.status !== "approved") return reply(res, 200, {
+        record: reconcilePayment(id, companyAddress, String(request.status), null), requestStatus: request.status,
+        transaction: null,
+      });
+      if (record.state !== "registered" && record.state !== "failed") return reply(res, 200, {
+        record, requestStatus: request.status, transaction: null,
+        next: record.state === "prepared" ? "submit_original_signed_transaction" : "reconcile_first",
+      });
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      const plan = await executionPlan(record.request, actor, body.grant, token);
+      const prepared = preparePayment(id, companyAddress, actor, plan.transaction.transactionBase64);
+      return reply(res, 200, { record: prepared, ...plan });
+    }
+    if (paymentJob && req.method === "POST" && paymentJob[2] === "submit") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const id = paymentId(paymentJob[1]);
+      const record = getPayment(id, companyAddress);
+      await readPaymentRequest(companyAddress, record.request, token);
+      const body = await readJson(req);
+      if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
+      const bound = bindSignedPayment(id, companyAddress, body.signedTransactionBase64);
+      const request = await readPaymentRequest(companyAddress, record.request, token);
+      if (request.status === "executed") return reply(res, 200, {
+        record: reconcilePayment(id, companyAddress, "executed", null), broadcast: "already_settled",
+      });
+      const endpoint = new URL(TEE_RPC);
+      endpoint.searchParams.set("token", token);
+      try {
+        const submitted = await new Connection(endpoint.toString(), "confirmed")
+          .sendRawTransaction(Transaction.from(Buffer.from(body.signedTransactionBase64, "base64")).serialize(),
+            { skipPreflight: true, maxRetries: 3 });
+        if (submitted !== bound.signature) throw new Error("PER returned a different signature");
+        return reply(res, 200, { record: bound, broadcast: "submitted" });
+      } catch {
+        return reply(res, 200, { record: bound, broadcast: "uncertain",
+          next: "reconcile_or_retry_same_signed_transaction" });
+      }
+    }
     if (req.method === "GET" && req.url?.startsWith("/v1/payments/") && req.url.endsWith("/status")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -296,38 +418,7 @@ createServer(async (req, res) => {
       const requestAddress = decodeURIComponent(req.url.slice("/v1/payments/".length, -"/build-execution".length));
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
-      const [policy, request, snapshot] = await Promise.all([
-        readCompanyPolicy(companyAddress, token), readPaymentRequest(companyAddress, requestAddress, token),
-        readTreasurySnapshot(companyAddress, token).catch(() => null),
-      ]);
-      const accounts = paymentExecutionAccounts(companyAddress, actor, policy, request);
-      const grantAddress = actor === policy.founder ? null : asAddress(body.grant, "grant");
-      if (grantAddress) {
-        const grant = await readTeamGrant(companyAddress, grantAddress, token);
-        if (grant.member !== actor || grant.role !== 1 || grant.active !== true ||
-            !Array.isArray(grant.recipients) || !grant.recipients.includes(accounts.recipient) ||
-            BigInt(accounts.amountMicro) > BigInt(String(grant.perPaymentCapMicro))) {
-          throw new Error("Finance grant does not allow this payment");
-        }
-      }
-      const transaction = await buildOperation({
-        operation: "executePayment", actor, request: requestAddress,
-        grant: grantAddress,
-        treasuryToken: accounts.treasuryToken, recipientToken: accounts.recipientToken,
-      }, { company: companyAddress, founder: founderAddress, teeToken: token });
-      const treasuryObservation = snapshot === null ? null : {
-        balanceMicro: snapshot.balanceMicro,
-        updatedSlot: snapshot.updatedSlot,
-        coversPaymentAtLastSync: BigInt(snapshot.balanceMicro) >= BigInt(accounts.amountMicro),
-      };
-      return reply(res, 200, {
-        requestAddress, recipient: accounts.recipient, amountMicro: accounts.amountMicro,
-        treasuryObservation,
-        warning: treasuryObservation?.coversPaymentAtLastSync === false
-          ? "Last treasury snapshot is below this payment; fund and resync before signing"
-          : null,
-        transaction,
-      });
+      return reply(res, 200, await executionPlan(requestAddress, actor, body.grant, token));
     }
     if (req.method === "GET" && req.url?.startsWith("/v1/team-grants/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
