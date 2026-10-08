@@ -15,7 +15,8 @@ import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
-import { createPayrollRun, getPayrollRun } from "./payroll-run.ts";
+import { createPayrollRun, getPayrollRun, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
+import { previewPayrollCsv } from "./payroll-roster.ts";
 import { deactivatePayee, linkPaymentPayee, listPayees, matchPayee, paymentPayee, registerPayee } from "./payee-journal.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
   getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
@@ -48,13 +49,13 @@ function matchesAgentApiKey(header: string | undefined): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readJson(req: IncomingMessage, maxBytes = 16_384): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buf = Buffer.from(chunk);
     size += buf.length;
-    if (size > 16_384) throw new Error("Request too large");
+    if (size > maxBytes) throw new Error("Request too large");
     chunks.push(buf);
   }
   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
@@ -614,6 +615,25 @@ createServer(async (req, res) => {
       const { recipientHash, ...payee } = deactivatePayee(companyAddress, deactivate[1]);
       return reply(res, 200, { payee });
     }
+    if (req.method === "POST" && req.url === "/v1/payroll-runs/preview") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req, 70_000);
+      const [policy, snapshot] = await Promise.all([
+        readCompanyPolicy(companyAddress, token), readTreasurySnapshot(companyAddress, token).catch(() => null),
+      ]);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      const preview = previewPayrollCsv(body.csvText);
+      const available = BigInt(String(policy.monthlyLimitMicro)) - BigInt(String(policy.spentMicro)) -
+        BigInt(String(policy.reservedMicro));
+      const total = BigInt(preview.totalMicro);
+      return reply(res, 200, { ...preview, remainingPolicyBudgetMicro: available.toString(),
+        budgetCoversValidRows: preview.errors.length === 0 && available >= total,
+        snapshotBalanceMicro: snapshot?.balanceMicro ?? null,
+        snapshotCoversValidRows: snapshot ? BigInt(snapshot.balanceMicro) >= total : null,
+        snapshotUpdatedSlot: snapshot?.updatedSlot ?? null,
+        note: "Snapshot can be stale; contract rechecks the current period budget and token balance at approval and payout" });
+    }
     if (req.method === "POST" && req.url === "/v1/payroll-runs") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -638,6 +658,9 @@ createServer(async (req, res) => {
       for (const item of run.items) {
         const inspected = await inspectPaymentFlow(getPaymentFlow(item.paymentId, companyAddress), founderAddress, token);
         const requestStatus = inspected.observation.status;
+        const privateRequest = inspected.observation.privateReady && requestStatus !== "empty"
+          ? await readPaymentRequest(companyAddress, item.request, token) : null;
+        const amountMicro = privateRequest ? String(privateRequest.amountMicro) : null;
         let payment = null;
         if (["approved", "executed", "rejected"].includes(requestStatus)) {
           const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
@@ -645,15 +668,14 @@ createServer(async (req, res) => {
           const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
           payment = reconcilePayment(item.paymentId, companyAddress, requestStatus, chain?.status ?? null);
         }
-        items.push({ paymentId: item.paymentId, request: item.request, requestStatus,
+        items.push({ paymentId: item.paymentId, request: item.request, requestStatus, amountMicro,
           next: `/v1/payment-flows/${item.paymentId}/next`,
           paymentJob: `/v1/payment-jobs/${item.paymentId}`, paymentState: payment?.state ?? null,
-          signature: payment?.signature ?? null });
+          signature: payment?.signature ?? null,
+          nextAction: payrollNextAction({ paymentId: item.paymentId, requestStatus,
+            paymentState: payment?.state ?? null, amountMicro }) });
       }
-      return reply(res, 200, { runId: run.runId, items,
-        readyToApprove: items.every((item) => item.requestStatus === "submitted"),
-        settledCount: items.filter((item) => item.paymentState === "settled").length,
-        failedCount: items.filter((item) => item.paymentState === "failed").length });
+      return reply(res, 200, { runId: run.runId, items, ...summarizePayroll(items) });
     }
     if (payrollRun && req.method === "POST" && payrollRun[2] === "approve") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];

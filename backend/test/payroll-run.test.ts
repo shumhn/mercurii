@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { createPayrollRun, getPayrollRun } from "../src/payroll-run.ts";
+import { createPayrollRun, getPayrollRun, payrollNextAction, summarizePayroll } from "../src/payroll-run.ts";
 import { getPaymentFlow } from "../src/payment-flow.ts";
 
 test("payroll run binds employee items once without persisting salaries or recipient wallets", () => {
@@ -56,4 +56,23 @@ test("payroll run binds employee items once without persisting salaries or recip
     else process.env.MERCURY_PAYMENT_FLOW_JOURNAL = priorFlow;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("payroll progress only retries failed approved items and keeps amounts balanced", () => {
+  const items = [
+    { paymentId: randomUUID(), requestStatus: "executed", paymentState: "settled", amountMicro: "1000000" },
+    { paymentId: randomUUID(), requestStatus: "approved", paymentState: "failed", amountMicro: "2000000" },
+    { paymentId: randomUUID(), requestStatus: "approved", paymentState: "submitted", amountMicro: "3000000" },
+    { paymentId: randomUUID(), requestStatus: "empty", paymentState: null, amountMicro: null },
+  ];
+  const summary = summarizePayroll(items);
+  assert.equal(summary.knownTotalMicro, "6000000");
+  assert.equal(summary.settledMicro, "1000000");
+  assert.equal(summary.failedMicro, "2000000");
+  assert.equal(summary.pendingMicro, "3000000");
+  assert.deepEqual(summary.retryablePaymentIds, [items[1]!.paymentId]);
+  assert.equal(summary.pendingCount, 2);
+  assert.equal(summary.unsubmittedCount, 1);
+  assert.equal(payrollNextAction(items[2]!), "reconcile_or_resend_same_signature");
+  assert.equal(payrollNextAction(items[0]!), "complete");
 });

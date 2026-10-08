@@ -14,6 +14,8 @@ export type PayrollItem = { paymentId: string; request: string; requester: strin
 export type PayrollRun = {
   runId: string; company: string; termsHash: string; items: PayrollItem[]; createdAt: string;
 };
+export type PayrollProgressItem = { paymentId: string; requestStatus: string;
+  paymentState: string | null; amountMicro: string | null };
 type Journal = { version: 1; runs: PayrollRun[] };
 
 function readJournal(): Journal {
@@ -92,4 +94,39 @@ export function createPayrollRun(runIdInput: unknown, companyInput: unknown, inp
   journal.runs.push(run);
   saveJournal(journal);
   return run;
+}
+
+export function payrollNextAction(item: PayrollProgressItem): string {
+  if (item.requestStatus === "executed") return "complete";
+  if (item.requestStatus === "rejected") return "rejected";
+  if (item.requestStatus === "submitted") return "approve_run";
+  if (item.requestStatus !== "approved") return "finish_private_request";
+  if (item.paymentState === "submitted") return "reconcile_or_resend_same_signature";
+  if (item.paymentState === "prepared") return "submit_prepared_or_rebuild_after_timeout";
+  return "prepare_payout";
+}
+
+export function summarizePayroll(items: PayrollProgressItem[]) {
+  let knownTotal = 0n;
+  let settled = 0n;
+  let failed = 0n;
+  let pending = 0n;
+  let settledCount = 0;
+  let failedCount = 0;
+  const retryablePaymentIds: string[] = [];
+  for (const item of items) {
+    const amount = item.amountMicro === null ? 0n : BigInt(item.amountMicro);
+    knownTotal += amount;
+    if (item.requestStatus === "executed") { settled += amount; settledCount++; }
+    else if (item.requestStatus === "approved" && item.paymentState === "failed") {
+      failed += amount;
+      failedCount++;
+      retryablePaymentIds.push(item.paymentId);
+    } else pending += amount;
+  }
+  return { knownTotalMicro: knownTotal.toString(), settledMicro: settled.toString(),
+    failedMicro: failed.toString(), pendingMicro: pending.toString(),
+    settledCount, failedCount, pendingCount: items.length - settledCount - failedCount,
+    unsubmittedCount: items.filter((item) => item.amountMicro === null).length,
+    retryablePaymentIds, readyToApprove: items.every((item) => item.requestStatus === "submitted") };
 }
