@@ -87,13 +87,16 @@ async function executionPlan(requestAddress: string, actor: string, grantInput: 
   };
 }
 
-async function paymentChainStatus(signature: string, token: string): Promise<"not_found" | "processed" | "confirmed" | "failed"> {
+async function paymentChainObservation(signature: string, token: string): Promise<{
+  status: "not_found" | "processed" | "confirmed" | "failed"; slot: number | null;
+}> {
   const endpoint = new URL(TEE_RPC);
   endpoint.searchParams.set("token", token);
   const status = (await new Connection(endpoint.toString(), "confirmed")
     .getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
-  return status === null ? "not_found" : status.err ? "failed" :
-    status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized" ? "confirmed" : "processed";
+  return { status: status === null ? "not_found" : status.err ? "failed" :
+    status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized" ? "confirmed" : "processed",
+    slot: status?.slot ?? null };
 }
 
 createServer(async (req, res) => {
@@ -338,21 +341,60 @@ createServer(async (req, res) => {
       return reply(res, 200, { record: reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
         requestStatus: request.status });
     }
-    const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit))?$/);
+    const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync))?$/);
     if (paymentJob && req.method === "GET" && !paymentJob[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const id = paymentId(paymentJob[1]);
       const record = getPayment(id, companyAddress);
       const request = await readPaymentRequest(companyAddress, record.request, token);
-      const chainStatus = record.signature ? await paymentChainStatus(record.signature, token).catch(() => null) : null;
+      const observation = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
+      const chainStatus = observation?.status ?? null;
+      const snapshot = await readTreasurySnapshot(companyAddress, token).catch(() => null);
+      const snapshotNeedsSync = request.status === "executed" && observation?.status === "confirmed" &&
+        observation.slot !== null && snapshot !== null
+        ? BigInt(snapshot.updatedSlot) < BigInt(observation.slot) : null;
       return reply(res, 200, { record: reconcilePayment(id, companyAddress, String(request.status), chainStatus),
-        requestStatus: request.status, chainStatus,
+        requestStatus: request.status, chainStatus, executionSlot: observation?.slot ?? null,
         paymentSettled: request.status === "executed",
         signatureLinked: chainStatus === "confirmed" && request.status === "executed",
-        chainStatusUnavailable: record.signature !== null && chainStatus === null,
+        chainStatusUnavailable: record.signature !== null && observation === null,
+        snapshotUpdatedSlot: snapshot?.updatedSlot ?? null, snapshotNeedsSync,
         integrityWarning: chainStatus === "confirmed" && request.status !== "executed"
           ? "Execution signature confirmed without an executed private request; investigate before retrying" : null });
+    }
+    if (paymentJob && req.method === "POST" && paymentJob[2] === "snapshot-sync") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must sync the treasury snapshot");
+      const id = paymentId(paymentJob[1]);
+      const record = getPayment(id, companyAddress);
+      const [request, policy, snapshot] = await Promise.all([
+        readPaymentRequest(companyAddress, record.request, token), readCompanyPolicy(companyAddress, token),
+        readTreasurySnapshot(companyAddress, token),
+      ]);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      if (request.status !== "executed" || !record.signature) throw new Error("Payment is not settled");
+      const observation = await paymentChainObservation(record.signature, token);
+      if (observation.status !== "confirmed" || observation.slot === null) {
+        return reply(res, 200, { status: "wait_for_execution", executionSlot: observation.slot });
+      }
+      if (BigInt(snapshot.updatedSlot) >= BigInt(observation.slot)) {
+        return reply(res, 200, { status: "ready", updatedSlot: snapshot.updatedSlot, balanceMicro: snapshot.balanceMicro });
+      }
+      const target = `${record.request}:snapshot`;
+      const prior = latestOnboardingReceipt(companyAddress, target, "paymentSnapshotSync");
+      if (prior && (prior.status === "built" || prior.status === "pending" || prior.status === "confirmed")) {
+        return reply(res, 200, { status: "wait_for_snapshot", receiptId: prior.id, receiptStatus: prior.status });
+      }
+      const transaction = await buildOperation({ operation: "syncTreasurySnapshot", actor: founderAddress,
+        treasuryToken: canonicalTokenAccount(companyAddress, DEVNET_USDC) },
+      { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = recordOnboardingBuild({ company: companyAddress, target,
+        operation: "paymentSnapshotSync", chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { status: "build", receiptId: receipt.id, transaction });
     }
     if (paymentJob && req.method === "POST" && paymentJob[2] === "prepare") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
