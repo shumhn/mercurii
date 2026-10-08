@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { timingSafeEqual } from "node:crypto";
 import { Connection } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
+import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import {
   DEVNET_USDC, asAddress, delegationStatus, preparePrivateReceive,
@@ -77,6 +78,27 @@ createServer(async (req, res) => {
       const transaction = await buildOperation(input as { operation: string; actor: string }, {
         company: companyAddress, founder: founderAddress, teeToken: token,
       });
+      return reply(res, 200, { ...result, transaction });
+    }
+    if (req.method === "POST" && req.url === "/v1/onboarding/finance-grant/next") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== founderAddress) throw new Error("Founder must issue the initial Finance grant");
+      const result = await inspectRootFinanceGrant({
+        company: companyAddress, founder: founderAddress, finance: body.finance,
+        grantId: body.grantId, perPaymentCapMicro: body.perPaymentCapMicro,
+        periodCapMicro: body.periodCapMicro, recipients: body.recipients,
+        mayDelegate: body.mayDelegate, teeToken: token,
+      });
+      if (result.next.status !== "build") return reply(res, 200, result);
+      const transaction = await buildOperation({
+        operation: result.next.operation!, actor, member: body.finance, grantId: body.grantId,
+        grant: result.grantAddress, role: "finance", parentGrant: null,
+        perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro,
+        recipients: body.recipients, mayDelegate: body.mayDelegate,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
       return reply(res, 200, { ...result, transaction });
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
