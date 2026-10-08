@@ -3,9 +3,12 @@ import { timingSafeEqual } from "node:crypto";
 import { Connection } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
+import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild } from "./onboarding-journal.ts";
+import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
+import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import {
-  DEVNET_USDC, asAddress, delegationStatus, preparePrivateReceive,
+  DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
 } from "./magicblock.ts";
 import {
@@ -78,7 +81,12 @@ createServer(async (req, res) => {
       const transaction = await buildOperation(input as { operation: string; actor: string }, {
         company: companyAddress, founder: founderAddress, teeToken: token,
       });
-      return reply(res, 200, { ...result, transaction });
+      const target = result.next.operation?.includes("Snapshot") ? result.snapshotAddress : companyAddress;
+      const receipt = recordOnboardingBuild({
+        company: companyAddress, target, operation: result.next.operation!,
+        chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
+      });
+      return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
     if (req.method === "POST" && req.url === "/v1/onboarding/finance-grant/next") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -99,7 +107,99 @@ createServer(async (req, res) => {
         perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro,
         recipients: body.recipients, mayDelegate: body.mayDelegate,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
-      return reply(res, 200, { ...result, transaction });
+      const receipt = recordOnboardingBuild({
+        company: companyAddress, target: result.grantAddress,
+        operation: result.next.operation!, chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64,
+      });
+      return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
+    }
+    if (req.method === "POST" && req.url?.startsWith("/v1/onboarding/receipts/") && req.url.endsWith("/confirm")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const id = req.url.slice("/v1/onboarding/receipts/".length, -"/confirm".length);
+      const body = await readJson(req);
+      if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
+      return reply(res, 200, await confirmOnboardingReceipt(id, body.signedTransactionBase64, token));
+    }
+    if (req.method === "POST" && req.url === "/v1/onboarding/recipient/next") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Recipient onboarding requires the verified Circle devnet USDC receive flow" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Recipient TEE auth token required");
+      const body = await readJson(req);
+      const recipient = asAddress(body.recipient, "recipient");
+      if (body.depositId !== undefined &&
+          (typeof body.depositId !== "string" || !/^[a-zA-Z0-9_-]{1,48}$/.test(body.depositId))) {
+        throw new Error("depositId must be 1 to 48 letters, digits, underscores, or hyphens");
+      }
+      const depositId = body.depositId ?? "initial";
+      const target = `${recipient}:${depositId}`;
+      const result = await nextRecipientOnboarding({
+        recipient, payer: body.payer, amountMicro: body.amountMicro, teeToken: token,
+        receipt: latestOnboardingReceipt(companyAddress, target, "recipientDeposit"),
+      });
+      if (!result.transaction) return reply(res, 200, result);
+      const receipt = recordOnboardingBuild({
+        company: companyAddress, target, operation: "recipientDeposit",
+        chain: result.transaction.sendTo, transactionBase64: result.transaction.transactionBase64,
+      });
+      return reply(res, 200, { ...result, receiptId: receipt.id });
+    }
+    if (req.method === "POST" && req.url === "/v1/onboarding/company-funding/next") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Treasury funding requires the verified Circle devnet USDC receive flow" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must start treasury funding");
+      const payer = asAddress(body.payer, "payer");
+      const amountMicro = asMicroAmount(body.amountMicro);
+      const targetBalanceMicro = asMicroAmount(body.targetBalanceMicro);
+      if (typeof body.fundingId !== "string" || !/^[a-zA-Z0-9_-]{1,48}$/.test(body.fundingId)) {
+        throw new Error("fundingId must be 1 to 48 letters, digits, underscores, or hyphens");
+      }
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) {
+        throw new Error("Private company policy does not match this funding request");
+      }
+      const target = `${companyAddress}:${body.fundingId}`;
+      const prior = latestOnboardingReceipt(companyAddress, target, "privateReceive");
+      const snapshot = await readTreasurySnapshot(companyAddress, token).catch((error: unknown) => {
+        if (error instanceof Error && (error.message === "Private treasury snapshot has not been synchronized" ||
+            error.message === "Private TreasurySnapshot unavailable")) return null;
+        throw error;
+      });
+      const next = nextTreasuryFundingStep(snapshot?.balanceMicro ?? null, targetBalanceMicro, prior?.status ?? null);
+      if (next === "ready" || next === "wait_for_receipt") {
+        return reply(res, 200, { status: next, observedBalanceMicro: snapshot?.balanceMicro ?? null,
+          receiptId: prior?.id ?? null, transaction: null });
+      }
+      if (next === "build_deposit") {
+        const transaction = await preparePrivateReceive({
+          payer, company: companyAddress, amountMicro, teeToken: token,
+          cluster: process.env.MAGICBLOCK_CLUSTER ?? "devnet-private",
+          expectedValidator: TEE_VALIDATOR.toBase58(),
+        });
+        const receipt = recordOnboardingBuild({
+          company: companyAddress, target, operation: "privateReceive",
+          chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
+        });
+        return reply(res, 200, { status: next, observedBalanceMicro: snapshot?.balanceMicro ?? null,
+          receiptId: receipt.id, transaction });
+      }
+      const transaction = await buildOperation({
+        operation: "syncTreasurySnapshot", actor: founderAddress,
+        treasuryToken: canonicalTokenAccount(companyAddress, DEVNET_USDC),
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = recordOnboardingBuild({
+        company: companyAddress, target, operation: "syncTreasurySnapshot",
+        chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
+      });
+      return reply(res, 200, { status: next, observedBalanceMicro: snapshot?.balanceMicro ?? null,
+        receiptId: receipt.id, transaction });
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });

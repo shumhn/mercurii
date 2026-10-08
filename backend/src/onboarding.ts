@@ -4,6 +4,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { DEVNET_USDC, asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
 import { BASE_RPC, PROGRAM_ID, TEE_RPC, snapshotAddress } from "./operations.ts";
+import { confirmedOnboardingStep } from "./onboarding-journal.ts";
 
 const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
 const coder = new anchor.BorshAccountsCoder(idl);
@@ -102,12 +103,14 @@ export async function inspectCompanyOnboarding(args: {
   if (snapshotData && !snapshotData.company.equals(company)) throw new Error("Snapshot belongs to another company");
   const observation: OnboardingObservation = {
     companyExists: baseCompany !== null, companyDelegated, companyVisibleOnTee: teeCompany !== null,
-    companyPermissionExists: companyPermission !== null || policy?.private_ready === true,
+    companyPermissionExists: companyPermission !== null || policy?.private_ready === true ||
+      confirmedOnboardingStep(company.toBase58(), company.toBase58(), "initCompanyPermission"),
     companyPrivate: policy?.private_ready === true,
     limitsMatch: policy?.monthly_limit_micro.toString() === String(monthlyLimitMicro) &&
       policy?.agent_cap_micro.toString() === String(agentCapMicro),
     snapshotExists: baseSnapshot !== null, snapshotDelegated, snapshotVisibleOnTee: teeSnapshot !== null,
-    snapshotPermissionExists: snapshotPermission !== null || snapshotData?.private_ready === true,
+    snapshotPermissionExists: snapshotPermission !== null || snapshotData?.private_ready === true ||
+      confirmedOnboardingStep(company.toBase58(), snapshot.toBase58(), "initSnapshotPermission"),
     snapshotPrivate: snapshotData?.private_ready === true,
   };
   return { companyAddress: company.toBase58(), snapshotAddress: snapshot.toBase58(), observation, next: nextOnboardingStep(observation) };

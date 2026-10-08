@@ -5,6 +5,7 @@ import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk
 import { asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
 import { BASE_RPC, PROGRAM_ID, TEE_RPC, readCompanyPolicy, teamGrantAddress } from "./operations.ts";
 import type { OnboardingStep } from "./onboarding.ts";
+import { confirmedOnboardingStep } from "./onboarding-journal.ts";
 
 const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
 const coder = new anchor.BorshAccountsCoder(idl);
@@ -99,7 +100,8 @@ export async function inspectRootFinanceGrant(args: {
   }
   const observation: FinanceGrantObservation = {
     exists: baseAccount !== null, delegated, visibleOnTee: teeAccount !== null,
-    permissionExists: permission !== null || data?.private_ready === true,
+    permissionExists: permission !== null || data?.private_ready === true ||
+      confirmedOnboardingStep(company.toBase58(), grant.toBase58(), "initGrantPermission"),
     privateReady: data?.private_ready === true, active: data?.active === true,
   };
   return { grantAddress: grant.toBase58(), observation, next: nextFinanceGrantStep(observation) };
