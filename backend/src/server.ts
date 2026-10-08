@@ -6,6 +6,7 @@ import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
+import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import {
   DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
@@ -200,6 +201,46 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, { status: next, observedBalanceMicro: snapshot?.balanceMicro ?? null,
         receiptId: receipt.id, transaction });
+    }
+    if (req.method === "POST" && req.url === "/v1/access/finance-revocation-cleanup/plan") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must run Finance reader cleanup");
+      const scan = await scanFinanceReaderCleanup({
+        company: companyAddress, founder: founderAddress, grant: body.grant, teeToken: token,
+      });
+      const operationKey = `cleanupFinance:${scan.grant}`;
+      const pending = [];
+      for (const target of scan.targets) {
+        const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
+        if (prior?.status === "confirmed") continue;
+        if (prior && (prior.status === "built" || prior.status === "pending")) {
+          pending.push({ target: target.address, kind: target.kind, receiptId: prior.id, transaction: null });
+          continue;
+        }
+        if (pending.length >= 10) break;
+        const transaction = await buildOperation({
+          operation: target.kind === "request" ? "setRequestReaders" : "setSnapshotReaders",
+          actor: founderAddress, request: target.address, includeFinance: false,
+        }, { company: companyAddress, founder: founderAddress, teeToken: token });
+        const receipt = recordOnboardingBuild({
+          company: companyAddress, target: target.address, operation: operationKey,
+          chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
+        });
+        pending.push({ target: target.address, kind: target.kind, receiptId: receipt.id, transaction });
+      }
+      const confirmedCount = scan.targets.filter((target) =>
+        latestOnboardingReceipt(companyAddress, target.address, operationKey)?.status === "confirmed").length;
+      return reply(res, 200, {
+        status: confirmedCount === scan.targets.length && scan.financeOwnedRequests.length === 0 &&
+          scan.agentPolicies.length === 0 ? "ready" : "cleanup_required",
+        grant: scan.grant, totalTargets: scan.targets.length, confirmedCount, pending,
+        residualReadAccess: {
+          financeOwnedRequests: scan.financeOwnedRequests,
+          agentPolicies: scan.agentPolicies,
+        },
+      });
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });
