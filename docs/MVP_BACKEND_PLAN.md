@@ -1,0 +1,10 @@
+# Mercury backend and program completion plan
+
+The next build phase excludes new Agent behavior. Each milestone must be repeatable for a newly configured Circle devnet USDC company, not just for the existing proof wallets.
+
+1. **Company onboarding.** Derive the company PDA, verify Founder/Finance/mint, create and delegate the public shell, create the PER permission, activate privacy, configure limits, and create a private treasury snapshot. The new `POST /v1/onboarding/next` returns the next unsigned Founder transaction or a propagation wait. It is chain-observed and never signs or submits. This first slice is implemented; recipient readiness, funding, Finance grant setup, and a durable transaction journal remain.
+2. **Team access and revocation.** Add discoverable member/grant records; persistent Requester and Viewer capabilities; an enforced branch/request scope; Founder-controlled role rotation; and a backend cleanup job that removes revoked users from every previously shared request, snapshot, and AgentPolicy PER ACL. Recheck read denial with the revoked key.
+3. **Payment tracking.** Store payment IDs, request addresses, actors, signatures, and state transitions without exposing confidential amounts or recipients outside authorized storage. Reconcile confirmed transactions against private `PaymentRequest` state and recipient balance when available. Retry setup/submit safely without creating a second payment. Refresh the treasury snapshot after receive and payout.
+4. **Human-approved payroll.** Maintain a private employee roster; create a run with item IDs, total and period budget, one human approval, one-time item payouts, and per-item success/failure/retry state. Keep salary data scoped to Founder/Finance and each recipient. Prove partial failure recovery on devnet.
+
+The first three milestones plus a working payroll run are the backend/program MVP. Frontend wallet login and signing are separate integration work. Mainnet requires additional security and recovery work described in [ARCHITECTURE.md](ARCHITECTURE.md).
