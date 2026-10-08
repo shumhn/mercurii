@@ -5,13 +5,14 @@ import { getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import nacl from "tweetnacl";
 import { DEVNET_USDC, canonicalTokenAccount } from "../src/magicblock.ts";
-import { BASE_RPC, PROGRAM_ID, TEE_RPC, buildOperation, readCompanyPolicy,
+import { BASE_RPC, PROGRAM_ID, TEE_RPC, branchScopeAddress, buildOperation, readCompanyPolicy,
   readPaymentRequest, readTeamGrant, teamGrantAddress } from "../src/operations.ts";
 
 const COMPANY = "362A56CsCtCWC3zRLS6ho5MYgp53q2REe6zG9fg8QAKW";
 const FOUNDER = "3PC5PmujJNELpq85NDVX6gUepUL8JRvZKkHm6sDtHEZX";
 const FINANCE = "AQ7qSt9aKneMF95ajWtg7Tek9iu5QZdJh91u1SGhrGWL";
 const PARENT_GRANT = "FyyCtcBeexpHvGvyyGMiLUZU8n9335xconQoJ4G1h4PP";
+const BRANCH_ID = 17;
 
 function loadKey(name: string): Keypair {
   const path = process.env[name];
@@ -77,12 +78,13 @@ await submit("delegateGrant", finance, { member: managerAddress, grantId });
 await submit("initGrantPermission", finance, { grant: childGrant });
 await submit("activateChildGrantPrivacy", finance, { grant: childGrant, parentGrant: PARENT_GRANT });
 await submit("configureGrant", finance, {
-  grant: childGrant, parentGrant: PARENT_GRANT, role: "manager", scope: managerAddress,
+  grant: childGrant, parentGrant: PARENT_GRANT, role: "manager",
+  scope: branchScopeAddress(new PublicKey(COMPANY), BRANCH_ID).toBase58(),
   perPaymentCapMicro: 2, periodCapMicro: 5, recipients: [FINANCE], mayDelegate: false,
 });
 assert.equal((await readTeamGrant(COMPANY, childGrant, tokens.get(managerAddress)!)).active, true);
 
-const requestId = String(Date.now() + 1);
+const requestId = String((BigInt(BRANCH_ID) << 40n) | (BigInt(Date.now() + 1) & ((1n << 40n) - 1n)));
 const request = PublicKey.findProgramAddressSync([
   Buffer.from("payment-request"), new PublicKey(COMPANY).toBuffer(), founder.publicKey.toBuffer(),
   new BN(requestId).toArrayLike(Buffer, "le", 8),
