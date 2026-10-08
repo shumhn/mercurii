@@ -65,6 +65,12 @@ async function send(transaction: any): Promise<{ signed: string; signature: stri
 await waitForServer();
 try {
   const runId = randomUUID();
+  const payeeIds = recipients.map(() => randomUUID());
+  for (const [index, wallet] of recipients.entries()) {
+    await api("/v1/payees", { actor: founder.publicKey.toBase58(), payeeId: payeeIds[index],
+      kind: "employee", teamId: "demo", recipient: wallet.publicKey.toBase58() });
+  }
+  assert.ok((await api("/v1/payees")).payees.length >= 2);
   const roster = { runId, requester: founder.publicKey.toBase58(),
     items: recipients.map((wallet) => ({ recipient: wallet.publicKey.toBase58(), amountMicro: 1 })) };
   const run = await api("/v1/payroll-runs", roster);
@@ -73,7 +79,7 @@ try {
   for (const [index, item] of run.items.entries()) {
     for (let attempt = 0; attempt < 45; attempt++) {
       const next = await api(item.next, { actor: founder.publicKey.toBase58(), requester: founder.publicKey.toBase58(),
-        ...roster.items[index] });
+        ...roster.items[index], payeeId: payeeIds[index] });
       if (next.observation.status === "submitted") break;
       if (next.transaction) {
         const sent = await send(next.transaction);
@@ -121,9 +127,9 @@ try {
   const final = await api(`/v1/payroll-runs/${runId}`);
   assert.equal(final.settledCount, 2);
   const history = await api("/v1/payment-jobs?limit=100");
-  for (const item of run.items) {
+  for (const [index, item] of run.items.entries()) {
     assert.ok(history.payments.some((row: any) => row.record.paymentId === item.paymentId &&
-      row.record.state === "settled"));
+      row.record.state === "settled" && row.payee?.payeeId === payeeIds[index]));
   }
   process.stdout.write(JSON.stringify({ result: "PASS", runId, approvalSignature: approval.signature,
     payoutSignatures: signatures, settledCount: final.settledCount,

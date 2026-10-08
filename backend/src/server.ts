@@ -16,6 +16,7 @@ import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import { createPayrollRun, getPayrollRun } from "./payroll-run.ts";
+import { deactivatePayee, linkPaymentPayee, listPayees, matchPayee, paymentPayee, registerPayee } from "./payee-journal.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
   getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
 import {
@@ -591,6 +592,28 @@ createServer(async (req, res) => {
       return reply(res, 200, { record: reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
         requestStatus: request.status });
     }
+    if (req.url === "/v1/payees" && (req.method === "GET" || req.method === "POST")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      if (req.method === "GET") return reply(res, 200, { payees: listPayees(companyAddress).map(({ recipientHash, ...payee }) => payee) });
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must register a payee");
+      const { recipientHash, ...payee } = registerPayee(companyAddress, body);
+      return reply(res, 200, { payee });
+    }
+    const deactivate = req.url?.match(/^\/v1\/payees\/([^/?]+)\/deactivate$/);
+    if (deactivate && req.method === "POST") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must deactivate a payee");
+      const { recipientHash, ...payee } = deactivatePayee(companyAddress, deactivate[1]);
+      return reply(res, 200, { payee });
+    }
     if (req.method === "POST" && req.url === "/v1/payroll-runs") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -696,7 +719,9 @@ createServer(async (req, res) => {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req);
+      if (body.payeeId !== undefined) matchPayee(companyAddress, body.payeeId, body.recipient);
       const { flow, terms } = getOrCreatePaymentFlow(paymentFlow[1], companyAddress, body);
+      if (body.payeeId !== undefined) linkPaymentPayee(companyAddress, flow.paymentId, body.payeeId);
       const inspected = await inspectPaymentFlow(flow, founderAddress, token);
       const baseResult = {
         paymentId: flow.paymentId, request: flow.request, requestId: flow.requestId, requester: flow.requester,
@@ -783,7 +808,8 @@ createServer(async (req, res) => {
           const request = await readPaymentRequest(companyAddress, record.request, token);
           const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
           const updated = reconcilePayment(record.paymentId, companyAddress, String(request.status), chain?.status ?? null);
-          rows.push({ record: updated, requestStatus: request.status, chainStatus: chain?.status ?? null,
+          rows.push({ record: updated, payee: paymentPayee(companyAddress, record.paymentId),
+            requestStatus: request.status, chainStatus: chain?.status ?? null,
             snapshotNeedsSync: request.status === "executed" && chain?.status === "confirmed" &&
               chain.slot !== null && snapshot !== null
               ? BigInt(snapshot.updatedSlot) < BigInt(chain.slot) : null,
