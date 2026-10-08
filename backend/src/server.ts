@@ -9,9 +9,11 @@ import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuil
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
+import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { bindSignedPayment, getPayment, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
-import { flowReceiptOperation, getOrCreatePaymentFlow, getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
+import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
+  getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
 import {
   DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
@@ -240,7 +242,15 @@ createServer(async (req, res) => {
       const id = req.url.slice("/v1/onboarding/receipts/".length, -"/confirm".length);
       const body = await readJson(req);
       if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
-      return reply(res, 200, await confirmOnboardingReceipt(id, body.signedTransactionBase64, token));
+      const receipt = await confirmOnboardingReceipt(id, body.signedTransactionBase64, token);
+      if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupFinance:") &&
+          receipt.target !== companyAddress) {
+        applyConfirmedReaderCleanup(receipt.company, receipt.target, "finance");
+      }
+      if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupManager:")) {
+        applyConfirmedReaderCleanup(receipt.company, receipt.target, "manager");
+      }
+      return reply(res, 200, receipt);
     }
     if (req.method === "POST" && req.url === "/v1/onboarding/recipient/next") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
@@ -342,6 +352,7 @@ createServer(async (req, res) => {
         const transaction = await buildOperation({
           operation: target.kind === "request" ? "setRequestReaders" : "setSnapshotReaders",
           actor: founderAddress, request: target.address, includeFinance: false,
+          manager: target.manager,
         }, { company: companyAddress, founder: founderAddress, teeToken: token });
         const receipt = recordOnboardingBuild({
           company: companyAddress, target: target.address, operation: operationKey,
@@ -353,12 +364,52 @@ createServer(async (req, res) => {
         latestOnboardingReceipt(companyAddress, target.address, operationKey)?.status === "confirmed").length;
       return reply(res, 200, {
         status: confirmedCount === scan.targets.length && scan.financeOwnedRequests.length === 0 &&
-          scan.agentPolicies.length === 0 ? "ready" : "cleanup_required",
+          scan.agentPolicies.length === 0 && scan.untrackedRequests.length === 0 ? "ready" : "cleanup_required",
         grant: scan.grant, totalTargets: scan.targets.length, confirmedCount, pending,
         residualReadAccess: {
           financeOwnedRequests: scan.financeOwnedRequests,
           agentPolicies: scan.agentPolicies,
+          untrackedRequests: scan.untrackedRequests,
         },
+      });
+    }
+    if (req.method === "POST" && req.url === "/v1/access/manager-revocation-cleanup/plan") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must run Manager reader cleanup");
+      const scan = await scanManagerReaderCleanup({
+        company: companyAddress, founder: founderAddress, grant: body.grant,
+        parentGrant: body.parentGrant, teeToken: token,
+      });
+      const operationKey = `cleanupManager:${scan.grant}`;
+      const pending = [];
+      for (const target of scan.targets) {
+        const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
+        if (prior?.status === "confirmed") continue;
+        if (prior && (prior.status === "built" || prior.status === "pending")) {
+          pending.push({ target: target.address, receiptId: prior.id, transaction: null });
+          continue;
+        }
+        if (pending.length >= 10) break;
+        const transaction = await buildOperation({
+          operation: "setRequestReaders", actor: founderAddress, request: target.address,
+          includeFinance: target.includeFinance, manager: null,
+        }, { company: companyAddress, founder: founderAddress, teeToken: token });
+        const receipt = recordOnboardingBuild({
+          company: companyAddress, target: target.address, operation: operationKey,
+          chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
+        });
+        pending.push({ target: target.address, receiptId: receipt.id, transaction });
+      }
+      const confirmedCount = scan.targets.filter((target) =>
+        latestOnboardingReceipt(companyAddress, target.address, operationKey)?.status === "confirmed").length;
+      return reply(res, 200, {
+        status: confirmedCount === scan.targets.length && scan.managerOwnedRequests.length === 0 &&
+          scan.untrackedRequests.length === 0 ? "ready" : "cleanup_required",
+        grant: scan.grant, manager: scan.manager, totalTargets: scan.targets.length, confirmedCount, pending,
+        residualReadAccess: { managerOwnedRequests: scan.managerOwnedRequests,
+          untrackedRequests: scan.untrackedRequests },
       });
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {

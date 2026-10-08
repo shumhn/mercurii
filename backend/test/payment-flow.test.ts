@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { Keypair } from "@solana/web3.js";
-import { getOrCreatePaymentFlow, nextPaymentFlowStep, type PaymentFlowObservation } from "../src/payment-flow.ts";
+import { applyConfirmedReaderCleanup, getOrCreatePaymentFlow, nextPaymentFlowStep, recordedRequestReaders,
+  type PaymentFlowObservation } from "../src/payment-flow.ts";
 
 const ready: PaymentFlowObservation = {
   exists: true, delegated: true, visibleOnTee: true, permissionExists: true,
@@ -29,7 +30,12 @@ test("guided payment flow keeps recipient and amount out of its durable journal"
     assert.equal(statSync(file).mode & 0o777, 0o600);
     const disk = JSON.parse(readFileSync(file, "utf8")) as { flows: Array<Record<string, unknown>> };
     assert.deepEqual(Object.keys(disk.flows[0]!).sort(),
-      ["company", "createdAt", "paymentId", "request", "requestId", "requester", "termsHash"].sort());
+      ["company", "createdAt", "includeFinance", "manager", "paymentId", "request", "requestId", "requester", "termsHash"].sort());
+    assert.equal(readFileSync(file, "utf8").includes(recipient), false);
+    assert.deepEqual(recordedRequestReaders(company).get(first.flow.request),
+      { requester, includeFinance: true, manager: null });
+    applyConfirmedReaderCleanup(company, first.flow.request, "finance");
+    assert.equal(recordedRequestReaders(company).get(first.flow.request)?.includeFinance, false);
     assert.throws(() => getOrCreatePaymentFlow(id, company, { ...body, amountMicro: 43 }), /different private request terms/);
     assert.throws(() => getOrCreatePaymentFlow(randomUUID(), company, { ...body, requester: recipient }), /Requester cannot/);
   } finally {

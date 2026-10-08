@@ -17,6 +17,7 @@ const path = () => process.env.MERCURY_PAYMENT_FLOW_JOURNAL ?? DEFAULT_PATH;
 type Flow = {
   paymentId: string; company: string; requester: string; request: string; requestId: string;
   termsHash: string; createdAt: string;
+  includeFinance?: boolean; manager?: string | null;
 };
 type Journal = { version: 1; flows: Flow[] };
 type RequestData = { company: PublicKey; requester: PublicKey; id: anchor.BN; private_ready: boolean; status: number };
@@ -89,16 +90,44 @@ export function getOrCreatePaymentFlow(paymentIdInput: unknown, companyInput: un
         existing.requestId !== requestId || existing.termsHash !== hashTerms(terms)) {
       throw new Error("Payment ID is already bound to different private request terms");
     }
+    if (existing.includeFinance === undefined || existing.manager === undefined) {
+      existing.includeFinance = terms.includeFinance;
+      existing.manager = terms.manager;
+      saveJournal(journal);
+    }
     return { flow: existing, terms };
   }
   if (journal.flows.some((item) => item.company === company && item.request === request)) {
     throw new Error("Derived payment request is already bound to another payment ID");
   }
   const flow: Flow = { paymentId: payment, company, requester: terms.requester, request, requestId,
-    termsHash: hashTerms(terms), createdAt: new Date().toISOString() };
+    termsHash: hashTerms(terms), createdAt: new Date().toISOString(),
+    includeFinance: terms.includeFinance, manager: terms.manager };
   journal.flows.push(flow);
   saveJournal(journal);
   return { flow, terms };
+}
+
+export function recordedRequestReaders(companyInput: unknown): Map<string, {
+  requester: string; includeFinance: boolean; manager: string | null;
+}> {
+  const company = asAddress(companyInput, "company");
+  return new Map(readJournal().flows.filter((flow) => flow.company === company &&
+    typeof flow.includeFinance === "boolean" && flow.manager !== undefined)
+    .map((flow) => [flow.request, { requester: flow.requester,
+      includeFinance: flow.includeFinance!, manager: flow.manager! }]));
+}
+
+export function applyConfirmedReaderCleanup(companyInput: unknown, requestInput: unknown,
+  kind: "finance" | "manager"): void {
+  const company = asAddress(companyInput, "company");
+  const request = asAddress(requestInput, "request");
+  const journal = readJournal();
+  const flow = journal.flows.find((item) => item.company === company && item.request === request);
+  if (!flow) return;
+  if (kind === "finance") flow.includeFinance = false;
+  else flow.manager = null;
+  saveJournal(journal);
 }
 
 export function getPaymentFlow(paymentIdInput: unknown, companyInput: unknown): Flow {
