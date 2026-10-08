@@ -94,6 +94,13 @@ export function latestOnboardingReceipt(company: string, target: string, operati
     receipt.company === company && receipt.target === target && receipt.operation === operation).at(-1) ?? null;
 }
 
+export function waitForCleanupReceipt(receipt: Receipt | null, now = Date.now()): boolean {
+  if (!receipt || (receipt.status !== "built" && receipt.status !== "pending")) return false;
+  const created = Date.parse(receipt.createdAt);
+  if (!Number.isFinite(created)) throw new Error("Cleanup receipt has an invalid creation time");
+  return now - created < 5 * 60_000;
+}
+
 export async function confirmOnboardingReceipt(id: string, signedTransactionBase64: string,
   teeToken: string, statusLookup?: (chain: "base" | "ephemeral", signature: string) =>
     Promise<{ err: unknown; confirmationStatus: string | null } | null>): Promise<Receipt> {

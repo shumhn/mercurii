@@ -5,7 +5,8 @@ import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
-import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild } from "./onboarding-journal.ts";
+import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild,
+  waitForCleanupReceipt } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
@@ -343,8 +344,11 @@ createServer(async (req, res) => {
       const pending = [];
       for (const target of scan.targets) {
         const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
-        if (prior?.status === "confirmed") continue;
-        if (prior && (prior.status === "built" || prior.status === "pending")) {
+        if (prior?.status === "confirmed") {
+          if (target.kind === "request") applyConfirmedReaderCleanup(companyAddress, target.address, "finance");
+          continue;
+        }
+        if (prior && waitForCleanupReceipt(prior)) {
           pending.push({ target: target.address, kind: target.kind, receiptId: prior.id, transaction: null });
           continue;
         }
@@ -386,8 +390,11 @@ createServer(async (req, res) => {
       const pending = [];
       for (const target of scan.targets) {
         const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
-        if (prior?.status === "confirmed") continue;
-        if (prior && (prior.status === "built" || prior.status === "pending")) {
+        if (prior?.status === "confirmed") {
+          applyConfirmedReaderCleanup(companyAddress, target.address, "manager");
+          continue;
+        }
+        if (prior && waitForCleanupReceipt(prior)) {
           pending.push({ target: target.address, receiptId: prior.id, transaction: null });
           continue;
         }

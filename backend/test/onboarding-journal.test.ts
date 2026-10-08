@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { confirmOnboardingReceipt, confirmedOnboardingStep, recordOnboardingBuild } from "../src/onboarding-journal.ts";
+import { confirmOnboardingReceipt, confirmedOnboardingStep, recordOnboardingBuild,
+  waitForCleanupReceipt } from "../src/onboarding-journal.ts";
 
 test("onboarding journal binds an unsigned build to its exact signed message", async () => {
   const directory = mkdtempSync(join(tmpdir(), "mercury-onboarding-"));
@@ -28,6 +29,9 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
       company: founder.publicKey.toBase58(), target: recipient.toBase58(),
       operation: "initGrantPermission", chain: "ephemeral", transactionBase64: unsigned,
     });
+    const created = Date.parse(receipt.createdAt);
+    assert.equal(waitForCleanupReceipt(receipt, created + 60_000), true);
+    assert.equal(waitForCleanupReceipt(receipt, created + 5 * 60_000), false);
     assert.equal(confirmedOnboardingStep(receipt.company, receipt.target, receipt.operation), false);
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.equal(JSON.parse(readFileSync(path, "utf8")).receipts[0].id, receipt.id);
@@ -40,6 +44,7 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
     const confirmed = await confirmOnboardingReceipt(receipt.id, tx.serialize().toString("base64"),
       "token", async () => ({ err: null, confirmationStatus: "confirmed" }));
     assert.equal(confirmed.status, "confirmed");
+    assert.equal(waitForCleanupReceipt(confirmed), false);
     assert.equal(confirmedOnboardingStep(receipt.company, receipt.target, receipt.operation), true);
 
     const v0Message = new TransactionMessage({
