@@ -2,7 +2,7 @@
 
 **Date:** 7 October 2026  
 **Target:** Solana Blitz v9 devnet MVP  
-**Status:** Core PER custody, private balance snapshot, payment, and recipient withdrawal proven on devnet with a custom six-decimal test mint and Circle devnet USDC. Founder direct payment, scoped Finance payment, Manager approval, and grant revocation were also proven with Circle devnet USDC. Reusable onboarding, complete read-access revocation, reconciliation, and production controls remain open.
+**Status:** Core PER custody, private balance snapshot, payment, and recipient withdrawal proven on devnet with a custom six-decimal test mint and Circle devnet USDC. Founder direct payment, scoped Finance payment, Manager approval, and grant revocation were also proven with Circle devnet USDC. Root Finance read cleanup for Founder-requested records and snapshot was verified on devnet. Complete read-access revocation, reconciliation, and production controls remain open.
 
 **Product:** A private company USDC treasury for small onchain teams. Teams receive, hold, and pay USDC through private routes; people and AI agents act under narrow rules without sharing private keys.
 
