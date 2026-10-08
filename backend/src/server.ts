@@ -6,7 +6,8 @@ import {
 } from "./magicblock.ts";
 import {
   BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, buildOperation,
-  paymentStatusFromRequest, readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTreasurySnapshot,
+  paymentExecutionAccounts, paymentStatusFromRequest,
+  readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTreasurySnapshot,
 } from "./operations.ts";
 
 const companyAddress = asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_COMPANY_ADDRESS");
@@ -65,6 +66,38 @@ createServer(async (req, res) => {
       if (!token) throw new Error("TEE auth token required");
       const request = decodeURIComponent(req.url.slice("/v1/payments/".length, -"/status".length));
       return reply(res, 200, paymentStatusFromRequest(await readPaymentRequest(companyAddress, request, token)));
+    }
+    if (req.method === "POST" && req.url?.startsWith("/v1/payments/") && req.url.endsWith("/build-execution")) {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Payment execution requires the verified Circle devnet USDC token CPI flow" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const requestAddress = decodeURIComponent(req.url.slice("/v1/payments/".length, -"/build-execution".length));
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      const [policy, request, snapshot] = await Promise.all([
+        readCompanyPolicy(companyAddress, token), readPaymentRequest(companyAddress, requestAddress, token),
+        readTreasurySnapshot(companyAddress, token).catch(() => null),
+      ]);
+      const accounts = paymentExecutionAccounts(companyAddress, actor, policy, request);
+      const transaction = await buildOperation({
+        operation: "executePayment", actor, request: requestAddress,
+        treasuryToken: accounts.treasuryToken, recipientToken: accounts.recipientToken,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const treasuryObservation = snapshot === null ? null : {
+        balanceMicro: snapshot.balanceMicro,
+        updatedSlot: snapshot.updatedSlot,
+        coversPaymentAtLastSync: BigInt(snapshot.balanceMicro) >= BigInt(accounts.amountMicro),
+      };
+      return reply(res, 200, {
+        requestAddress, recipient: accounts.recipient, amountMicro: accounts.amountMicro,
+        treasuryObservation,
+        warning: treasuryObservation?.coversPaymentAtLastSync === false
+          ? "Last treasury snapshot is below this payment; fund and resync before signing"
+          : null,
+        transaction,
+      });
     }
     if (req.method === "GET" && req.url?.startsWith("/v1/agent-policies/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];

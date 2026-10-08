@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { preparePrivateReceive, prepareRecipientOnboarding, prepareRecipientWithdrawal } from "../src/magicblock.ts";
-import { paymentStatusFromRequest } from "../src/operations.ts";
+import { paymentExecutionAccounts, paymentStatusFromRequest } from "../src/operations.ts";
 
 test("private receive builder fixes the route and leaves payer signing to the client", async () => {
   const payer = Keypair.generate().publicKey.toBase58();
@@ -108,6 +108,26 @@ test("payment status follows the atomic private request state", () => {
   assert.equal(paymentStatusFromRequest({ ...request, status: "approved" }).paymentSettled, false);
   assert.equal(paymentStatusFromRequest({ ...request, status: "executed" }).paymentSettled, true);
   assert.throws(() => paymentStatusFromRequest({ ...request, status: "mystery" }), /Unknown private payment request status/);
+});
+
+test("approved USDC payout derives the proven company and recipient token accounts", () => {
+  const company = "362A56CsCtCWC3zRLS6ho5MYgp53q2REe6zG9fg8QAKW";
+  const finance = "AQ7qSt9aKneMF95ajWtg7Tek9iu5QZdJh91u1SGhrGWL";
+  const policy = {
+    address: company, finance, mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    period: "1", reservedMicro: "10000",
+  };
+  const request = {
+    status: "approved", recipient: finance, amountMicro: "10000", approvedPeriod: "1",
+  };
+  const accounts = paymentExecutionAccounts(company, finance, policy, request);
+  assert.equal(accounts.treasuryToken, "9FZSyPdFCdnUExrGwtmigbPGR9HcCehJ77osx3ctoKeH");
+  assert.equal(accounts.recipientToken, "8EoZBo73yQy7jMVxoKz5QW12nEhMMwbEHT4W1kyZTj3S");
+  assert.equal(accounts.amountMicro, "10000");
+  assert.throws(() => paymentExecutionAccounts(company, finance, policy, { ...request, status: "executed" }), /not approved/);
+  assert.throws(() => paymentExecutionAccounts(company, finance, { ...policy, reservedMicro: "9999" }, request), /reservation is missing/);
+  assert.throws(() => paymentExecutionAccounts(company, finance, policy, { ...request, approvedPeriod: "2" }), /another budget period/);
+  assert.throws(() => paymentExecutionAccounts(company, Keypair.generate().publicKey.toBase58(), policy, request), /Finance must act/);
 });
 
 test("recipient withdrawal is owner-signed and pinned to the company PER validator", async () => {

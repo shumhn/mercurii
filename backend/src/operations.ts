@@ -5,7 +5,7 @@ import {
   EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID,
   permissionPdaFromAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { asAddress, asMicroAmount } from "./magicblock.ts";
+import { DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount } from "./magicblock.ts";
 
 const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
 export const PROGRAM_ID = new PublicKey(idl.address);
@@ -100,6 +100,27 @@ export function paymentStatusFromRequest(request: Record<string, unknown>): Reco
     amountMicro: request.amountMicro,
     paymentSettled: status === "executed",
     evidence: "Mercury private request state; executed is written atomically with its SPL token transfer",
+  };
+}
+
+export function paymentExecutionAccounts(companyAddress: string, actorAddress: string,
+  policy: Record<string, unknown>, request: Record<string, unknown>): {
+    recipient: string; amountMicro: string; treasuryToken: string; recipientToken: string;
+  } {
+  const company = asAddress(companyAddress, "company");
+  const actor = asAddress(actorAddress, "actor");
+  if (policy.address !== company || policy.finance !== actor) throw new Error("Finance must act for the configured company");
+  if (policy.mint !== DEVNET_USDC) throw new Error("Payment builder requires Circle devnet USDC policy");
+  if (request.status !== "approved") throw new Error("Payment request is not approved");
+  if (request.approvedPeriod !== policy.period) throw new Error("Payment approval belongs to another budget period");
+  const recipient = asAddress(request.recipient, "recipient");
+  const amountMicro = String(request.amountMicro);
+  if (!/^\d+$/.test(amountMicro) || BigInt(amountMicro) === 0n) throw new Error("Invalid approved payment amount");
+  if (BigInt(String(policy.reservedMicro)) < BigInt(amountMicro)) throw new Error("Budget reservation is missing");
+  return {
+    recipient, amountMicro,
+    treasuryToken: canonicalTokenAccount(company, DEVNET_USDC),
+    recipientToken: canonicalTokenAccount(recipient, DEVNET_USDC),
   };
 }
 

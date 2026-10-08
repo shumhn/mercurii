@@ -40,6 +40,14 @@ export function asMicroAmount(value: unknown): number {
   return value as number;
 }
 
+export function canonicalTokenAccount(owner: unknown, mint: unknown): string {
+  const ownerKey = new PublicKey(asAddress(owner, "owner"));
+  const mintKey = new PublicKey(asAddress(mint, "mint"));
+  return PublicKey.findProgramAddressSync(
+    [ownerKey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintKey.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID,
+  )[0].toBase58();
+}
+
 export async function preparePrivateReceive(args: {
   payer: unknown;
   company: unknown;
@@ -203,9 +211,7 @@ export async function readRecipientBalance(args: {
   if (!PublicKey.isOnCurve(owner.toBytes())) throw new Error("Recipient must be a wallet owner");
   const mint = new PublicKey(asAddress(args.mint, "mint"));
   if (!args.teeToken) throw new Error("TEE auth token required");
-  const tokenAccount = PublicKey.findProgramAddressSync(
-    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID,
-  )[0];
+  const tokenAccount = new PublicKey(canonicalTokenAccount(owner.toBase58(), mint.toBase58()));
   const endpoint = new URL(args.teeRpc ?? DEFAULT_TEE_RPC);
   endpoint.searchParams.set("token", args.teeToken);
   const account = await new Connection(endpoint.toString(), "confirmed").getAccountInfo(tokenAccount);
