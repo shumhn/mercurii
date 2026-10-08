@@ -5,18 +5,18 @@ import { Connection, Keypair, PublicKey } from "@solana/web3.js";
 import { getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
 import nacl from "tweetnacl";
 
-const financePath = process.env.MERCURY_FINANCE_KEYPAIR;
-if (!financePath) throw new Error("MERCURY_FINANCE_KEYPAIR is required");
-const finance = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(financePath, "utf8"))));
+const founderPath = process.env.MERCURY_TEST_FOUNDER_KEYPAIR;
+if (!founderPath) throw new Error("MERCURY_TEST_FOUNDER_KEYPAIR is required");
+const founder = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(founderPath, "utf8"))));
 const teeUrl = "https://devnet-tee.magicblock.app";
-const auth = await getAuthToken(teeUrl, finance.publicKey, async (message: Uint8Array) =>
-  nacl.sign.detached(message, finance.secretKey));
+const auth = await getAuthToken(teeUrl, founder.publicKey, async (message: Uint8Array) =>
+  nacl.sign.detached(message, founder.secretKey));
 const endpoint = new URL(teeUrl);
 endpoint.searchParams.set("token", auth.token);
 const connection = new Connection(endpoint.toString(), "confirmed");
 const program = new anchor.Program(
   JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl,
-  new anchor.AnchorProvider(connection, new anchor.Wallet(finance), { commitment: "confirmed" }),
+  new anchor.AnchorProvider(connection, new anchor.Wallet(founder), { commitment: "confirmed" }),
 );
 const company = new PublicKey("EpyTeGaoxTJ6Anm1SxHFfyTkYaPdNDPHdgUvvGYXJzDB");
 const request = new PublicKey("58DSegaDoCENZLVnmUp5VjNA9pzZDysoNKtDVCZ33T9F");
@@ -33,7 +33,8 @@ assert.equal(stateBefore.status, 3, "test request must already be executed");
 let failure = "";
 try {
   await program.methods.executePayment().accountsPartial({
-    finance: finance.publicKey, policy: company, request, treasuryToken, recipientToken, tokenProgram,
+    actor: founder.publicKey, policy: company, request, grant: program.programId,
+    treasuryToken, recipientToken, tokenProgram,
   }).simulate();
 } catch (error) {
   const response = (error as { simulationResponse?: { logs?: string[]; err?: unknown } }).simulationResponse;

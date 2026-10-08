@@ -16,6 +16,7 @@ const PAYMENT_MICRO = 10_000n;
 
 const financePath = process.env.MERCURY_FINANCE_KEYPAIR;
 if (!financePath) throw new Error("MERCURY_FINANCE_KEYPAIR is required");
+const grantAddress = process.env.MERCURY_FINANCE_GRANT_ADDRESS;
 const finance = Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(financePath, "utf8"))));
 const auth = await getAuthToken(TEE_RPC, finance.publicKey, async (message: Uint8Array) =>
   nacl.sign.detached(message, finance.secretKey));
@@ -41,10 +42,12 @@ if (request.status === "executed") {
   process.exit(0);
 }
 assert.equal(request.status, "approved", "request must be approved before payout");
+if (!grantAddress) throw new Error("MERCURY_FINANCE_GRANT_ADDRESS is required for Finance execution");
 assert.ok(BigInt(String(policy.reservedMicro)) >= PAYMENT_MICRO, "budget reservation is missing");
 
 const transaction = await program.methods.executePayment().accountsPartial({
-  finance: finance.publicKey, policy: new PublicKey(COMPANY), request: new PublicKey(REQUEST),
+  actor: finance.publicKey, policy: new PublicKey(COMPANY), request: new PublicKey(REQUEST),
+  grant: new PublicKey(grantAddress),
   treasuryToken: TREASURY_TOKEN, recipientToken: RECIPIENT_TOKEN, tokenProgram: TOKEN_PROGRAM,
 }).transaction();
 transaction.feePayer = finance.publicKey;

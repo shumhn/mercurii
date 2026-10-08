@@ -172,7 +172,7 @@ async function main(): Promise<void> {
   }
   let requestState = await (erProgram.account as any).paymentRequest.fetch(request);
   if (!requestState.privateReady) {
-    const tx = await erProgram.methods.activateRequestPrivacy().accountsPartial({
+    const tx = await erProgram.methods.activateRequestPrivacy(PublicKey.default).accountsPartial({
       ...requestAccounts, founder: founder.publicKey, policy,
     }).transaction();
     process.stdout.write(`activate_request_privacy: ${await sendEr(erProvider, tx)}\n`);
@@ -188,8 +188,10 @@ async function main(): Promise<void> {
   const financeProgram = new anchor.Program(idl, financeProvider);
   requestState = await (financeProgram.account as any).paymentRequest.fetch(request);
   if (requestState.status === 1) {
-    const tx = await financeProgram.methods.approvePayment().accountsPartial({ finance: finance.publicKey, policy, request }).transaction();
-    process.stdout.write(`approve_payment: ${await sendEr(financeProvider, tx)}\n`);
+    const tx = await erProgram.methods.approvePayment().accountsPartial({
+      actor: founder.publicKey, policy, request, grant: programId, parentGrant: programId,
+    }).transaction();
+    process.stdout.write(`approve_payment: ${await sendEr(erProvider, tx)}\n`);
   }
   requestState = await (erProgram.account as any).paymentRequest.fetch(request);
   assert.ok(requestState.status === 2 || requestState.status === 3);
@@ -198,18 +200,20 @@ async function main(): Promise<void> {
   process.stdout.write(`PASS: private payment request ${request.toBase58()} status ${requestState.status}; outsider denied\n`);
 
   if (requestState.status === 2) {
-    const wrongApprover = await erProgram.methods.approvePayment().accountsPartial({
-      finance: founder.publicKey, policy, request,
+    const outsiderProvider = new anchor.AnchorProvider(outsiderEr, new anchor.Wallet(outsider), { commitment: "confirmed" });
+    const outsiderProgram = new anchor.Program(idl, outsiderProvider);
+    const wrongApprover = await outsiderProgram.methods.approvePayment().accountsPartial({
+      actor: outsider.publicKey, policy, request, grant: programId, parentGrant: programId,
     }).transaction();
     let wrongApproverRejected = false;
     try {
-      await sendEr(erProvider, wrongApprover);
+      await sendEr(outsiderProvider, wrongApprover);
     } catch {
       wrongApproverRejected = true;
     }
-    assert.equal(wrongApproverRejected, true, "Founder unexpectedly passed the Finance signer check");
+    assert.equal(wrongApproverRejected, true, "Outsider unexpectedly passed the company permission check");
     assert.equal((await (financeProgram.account as any).paymentRequest.fetch(request)).status, 2);
-    process.stdout.write("PASS: Founder cannot sign as Finance for approval\n");
+    process.stdout.write("PASS: outsider cannot approve a company payment\n");
   }
 
   const [agentPolicy] = PublicKey.findProgramAddressSync([

@@ -85,10 +85,10 @@ if (!state.privateReady) {
 const financeEr = await tee(finance);
 const financeProvider = new anchor.AnchorProvider(financeEr, new anchor.Wallet(finance), { commitment: "confirmed" });
 const financeProgram = new anchor.Program(idl, financeProvider);
-const tx = await financeProgram.methods.syncTreasurySnapshot().accountsPartial({
-  finance: finance.publicKey, policy: company, snapshot, treasuryToken,
+const tx = await founderProgram.methods.syncTreasurySnapshot().accountsPartial({
+  actor: founder.publicKey, policy: company, snapshot, grant: programId, treasuryToken,
 }).transaction();
-process.stdout.write(`sync_treasury_snapshot: ${await send(financeProvider, tx)}\n`);
+process.stdout.write(`sync_treasury_snapshot: ${await send(founderProvider, tx)}\n`);
 state = await (financeProgram.account as any).treasurySnapshot.fetch(snapshot);
 assert.equal(state.privateReady, true);
 assert.ok(state.updatedSlot.toNumber() > 0);

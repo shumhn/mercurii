@@ -93,15 +93,18 @@ if (step === "bootstrap") {
     note: "Run the fund step only after the agent float token account is available on the selected PER" }) + "\n");
 } else if (step === "fund") {
   assert.equal(process.env.MERCURY_CONFIRM_AGENT_FUND, "1", "Set MERCURY_CONFIRM_AGENT_FUND=1 for this devnet transfer");
+  const founder = key("MERCURY_FOUNDER_KEYPAIR");
+  assert.equal(founder.publicKey.toBase58(), company.founder);
+  const founderToken = await auth(founder);
   const before = BigInt(String(company.spentMicro));
   expectedMicro("MERCURY_EXPECT_COMPANY_SPENT_MICRO", before);
   const built = await buildOperation({
-    operation: "fundAgentFloat", actor: finance.publicKey.toBase58(), agentPolicy: AGENT_POLICY,
+    operation: "fundAgentFloat", actor: founder.publicKey.toBase58(), agentPolicy: AGENT_POLICY,
     amountMicro: FUND_MICRO, treasuryToken, agentFloatToken,
-  }, { company: COMPANY, founder: String(company.founder), teeToken: financeToken });
+  }, { company: COMPANY, founder: String(company.founder), teeToken: founderToken });
   assert.equal(built.sendTo, "ephemeral");
-  const signature = await sendUnsigned(built.transactionBase64, finance, teeConnection(financeToken));
-  const after = await readCompanyPolicy(COMPANY, financeToken);
+  const signature = await sendUnsigned(built.transactionBase64, founder, teeConnection(founderToken));
+  const after = await readCompanyPolicy(COMPANY, founderToken);
   assert.equal(BigInt(String(after.spentMicro)), before + BigInt(FUND_MICRO));
   process.stdout.write(JSON.stringify({ result: "PASS", action: "fund_agent_float", signature,
     amountMicro: FUND_MICRO, companySpentBeforeMicro: before.toString(),
