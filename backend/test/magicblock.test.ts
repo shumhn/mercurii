@@ -114,7 +114,7 @@ test("approved USDC payout derives the proven company and recipient token accoun
   const company = "362A56CsCtCWC3zRLS6ho5MYgp53q2REe6zG9fg8QAKW";
   const finance = "AQ7qSt9aKneMF95ajWtg7Tek9iu5QZdJh91u1SGhrGWL";
   const policy = {
-    address: company, finance, mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
+    address: company, founder: Keypair.generate().publicKey.toBase58(), finance, mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU",
     period: "1", reservedMicro: "10000",
   };
   const request = {
@@ -127,7 +127,8 @@ test("approved USDC payout derives the proven company and recipient token accoun
   assert.throws(() => paymentExecutionAccounts(company, finance, policy, { ...request, status: "executed" }), /not approved/);
   assert.throws(() => paymentExecutionAccounts(company, finance, { ...policy, reservedMicro: "9999" }, request), /reservation is missing/);
   assert.throws(() => paymentExecutionAccounts(company, finance, policy, { ...request, approvedPeriod: "2" }), /another budget period/);
-  assert.throws(() => paymentExecutionAccounts(company, Keypair.generate().publicKey.toBase58(), policy, request), /Finance must act/);
+  assert.throws(() => paymentExecutionAccounts(company, Keypair.generate().publicKey.toBase58(), policy, request), /Founder or Finance must act/);
+  assert.equal(paymentExecutionAccounts(company, policy.founder, policy, request).amountMicro, "10000");
 });
 
 test("agent USDC payment builder input is pinned to policy agent, recipient, and caps", () => {

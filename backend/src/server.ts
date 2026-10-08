@@ -9,7 +9,7 @@ import {
 import {
   BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, agentPaymentAccounts, buildOperation,
   paymentExecutionAccounts, paymentStatusFromRequest,
-  readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTreasurySnapshot,
+  readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTeamGrant, readTreasurySnapshot,
 } from "./operations.ts";
 
 const companyAddress = asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_COMPANY_ADDRESS");
@@ -111,8 +111,18 @@ createServer(async (req, res) => {
         readTreasurySnapshot(companyAddress, token).catch(() => null),
       ]);
       const accounts = paymentExecutionAccounts(companyAddress, actor, policy, request);
+      const grantAddress = actor === policy.founder ? null : asAddress(body.grant, "grant");
+      if (grantAddress) {
+        const grant = await readTeamGrant(companyAddress, grantAddress, token);
+        if (grant.member !== actor || grant.role !== 1 || grant.active !== true ||
+            !Array.isArray(grant.recipients) || !grant.recipients.includes(accounts.recipient) ||
+            BigInt(accounts.amountMicro) > BigInt(String(grant.perPaymentCapMicro))) {
+          throw new Error("Finance grant does not allow this payment");
+        }
+      }
       const transaction = await buildOperation({
         operation: "executePayment", actor, request: requestAddress,
+        grant: grantAddress,
         treasuryToken: accounts.treasuryToken, recipientToken: accounts.recipientToken,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
       const treasuryObservation = snapshot === null ? null : {
@@ -128,6 +138,12 @@ createServer(async (req, res) => {
           : null,
         transaction,
       });
+    }
+    if (req.method === "GET" && req.url?.startsWith("/v1/team-grants/")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const grant = decodeURIComponent(req.url.slice("/v1/team-grants/".length));
+      return reply(res, 200, await readTeamGrant(companyAddress, grant, token));
     }
     if (req.method === "GET" && req.url?.startsWith("/v1/agent-policies/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];

@@ -46,6 +46,12 @@ export function snapshotAddress(company: PublicKey): PublicKey {
   return PublicKey.findProgramAddressSync([Buffer.from("treasury-snapshot"), company.toBuffer()], PROGRAM_ID)[0];
 }
 
+export function teamGrantAddress(company: PublicKey, grantor: PublicKey, member: PublicKey, id: anchor.BN): PublicKey {
+  return PublicKey.findProgramAddressSync([
+    Buffer.from("team-grant"), company.toBuffer(), grantor.toBuffer(), member.toBuffer(), id.toArrayLike(Buffer, "le", 8),
+  ], PROGRAM_ID)[0];
+}
+
 async function readPrivateAccount<T>(address: PublicKey, name: string, teeToken: string): Promise<T> {
   if (!teeToken) throw new Error("TEE auth token required");
   const endpoint = new URL(TEE_RPC);
@@ -69,6 +75,30 @@ export async function readCompanyPolicy(companyAddress: string, teeToken: string
     agentCapMicro: data.agent_cap_micro.toString(), period: data.period.toString(),
     spentMicro: data.spent_micro.toString(), reservedMicro: data.reserved_micro.toString(),
     version: data.version.toString(),
+  };
+}
+
+export async function readTeamGrant(companyAddress: string, grantAddress: string, teeToken: string): Promise<Record<string, unknown>> {
+  const company = pub(companyAddress, "company");
+  const grant = pub(grantAddress, "grant");
+  const data = await readPrivateAccount<{
+    company: PublicKey; grantor: PublicKey; member: PublicKey; id: anchor.BN;
+    parent: PublicKey; scope: PublicKey; role: number; private_ready: boolean;
+    active: boolean; revoked: boolean; may_delegate: boolean; per_payment_cap_micro: anchor.BN;
+    period_cap_micro: anchor.BN; period: anchor.BN; spent_micro: anchor.BN;
+    approved_micro: anchor.BN; recipients: PublicKey[]; child_readers: PublicKey[];
+  }>(grant, "TeamGrant", teeToken);
+  if (!data.company.equals(company) || !data.private_ready) throw new Error("Grant is not private for this company");
+  return {
+    address: grant.toBase58(), company: data.company.toBase58(),
+    grantor: data.grantor.toBase58(), member: data.member.toBase58(), id: data.id.toString(),
+    parent: data.parent.toBase58(), scope: data.scope.toBase58(), role: data.role,
+    active: data.active, revoked: data.revoked, mayDelegate: data.may_delegate,
+    perPaymentCapMicro: data.per_payment_cap_micro.toString(),
+    periodCapMicro: data.period_cap_micro.toString(), period: data.period.toString(),
+    spentMicro: data.spent_micro.toString(), approvedMicro: data.approved_micro.toString(),
+    recipients: data.recipients.map((item) => item.toBase58()),
+    childReaders: data.child_readers.map((item) => item.toBase58()),
   };
 }
 
@@ -109,7 +139,9 @@ export function paymentExecutionAccounts(companyAddress: string, actorAddress: s
   } {
   const company = asAddress(companyAddress, "company");
   const actor = asAddress(actorAddress, "actor");
-  if (policy.address !== company || policy.finance !== actor) throw new Error("Finance must act for the configured company");
+  if (policy.address !== company || (policy.finance !== actor && policy.founder !== actor)) {
+    throw new Error("Founder or Finance must act for the configured company");
+  }
   if (policy.mint !== DEVNET_USDC) throw new Error("Payment builder requires Circle devnet USDC policy");
   if (request.status !== "approved") throw new Error("Payment request is not approved");
   if (request.approvedPeriod !== policy.period) throw new Error("Payment approval belongs to another budget period");
@@ -196,6 +228,8 @@ const privateOperations = new Set([
   "initRequestPermission", "activateRequestPrivacy", "submitPayment", "approvePayment", "rejectPayment", "executePayment",
   "initAgentPermission", "activateAgentPrivacy", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
   "initSnapshotPermission", "activateSnapshotPrivacy", "syncTreasurySnapshot",
+  "setSnapshotReaders", "setRequestReaders",
+  "initGrantPermission", "activateRootGrantPrivacy", "activateChildGrantPrivacy", "configureGrant", "revokeGrant",
 ]);
 
 export async function buildOperation(input: BuildInput, config: {
@@ -253,10 +287,19 @@ export async function buildOperation(input: BuildInput, config: {
       tx = await program.methods.activateSnapshotPrivacy().accountsPartial({ founder: actor, policy: company, snapshot, ...aclAccounts(snapshot) }).transaction();
       break;
     }
+    case "setSnapshotReaders": {
+      const snapshot = snapshotAddress(company);
+      tx = await program.methods.setSnapshotReaders(input.includeFinance === true).accountsPartial({
+        founder: actor, policy: company, snapshot, ...aclAccounts(snapshot),
+      }).transaction();
+      break;
+    }
     case "syncTreasurySnapshot": {
       const snapshot = snapshotAddress(company);
       tx = await program.methods.syncTreasurySnapshot().accountsPartial({
-        finance: actor, policy: company, snapshot, treasuryToken: pub(input.treasuryToken, "treasuryToken"),
+        actor, policy: company, snapshot,
+        grant: input.grant ? pub(input.grant, "grant") : PROGRAM_ID,
+        treasuryToken: pub(input.treasuryToken, "treasuryToken"),
       }).transaction();
       break;
     }
@@ -273,6 +316,73 @@ export async function buildOperation(input: BuildInput, config: {
       tx = await program.methods.configureLimits(positiveMicro(input.monthlyLimitMicro), positiveMicro(input.agentCapMicro))
         .accountsPartial({ founder: actor, policy: company }).transaction();
       break;
+    case "createGrantShell": {
+      const member = pub(input.member, "member");
+      const id = asId(input.grantId);
+      const grant = teamGrantAddress(company, actor, member, id);
+      tx = await program.methods.createGrantShell(company, member, id).accountsPartial({
+        grantor: actor, grant, systemProgram: SystemProgram.programId,
+      }).transaction();
+      break;
+    }
+    case "delegateGrant": {
+      const member = pub(input.member, "member");
+      const id = asId(input.grantId);
+      const grant = teamGrantAddress(company, actor, member, id);
+      tx = await program.methods.delegateGrant(company, member, id).accountsPartial({
+        grantor: actor, grant, validator: TEE_VALIDATOR,
+      }).transaction();
+      break;
+    }
+    case "initGrantPermission": {
+      const grant = pub(input.grant, "grant");
+      tx = await program.methods.initGrantPermission().accountsPartial({
+        grantor: actor, grant, ...aclAccounts(grant),
+      }).transaction();
+      break;
+    }
+    case "activateRootGrantPrivacy": {
+      const grant = pub(input.grant, "grant");
+      tx = await program.methods.activateRootGrantPrivacy().accountsPartial({
+        founder: actor, policy: company, grant, ...aclAccounts(grant),
+        policyPermission: permissionPdaFromAccount(company),
+      }).transaction();
+      break;
+    }
+    case "activateChildGrantPrivacy": {
+      const grant = pub(input.grant, "grant");
+      const parent = pub(input.parentGrant, "parentGrant");
+      tx = await program.methods.activateChildGrantPrivacy().accountsPartial({
+        grantor: actor, policy: company, grant, parent,
+        ...aclAccounts(grant), parentPermission: permissionPdaFromAccount(parent),
+        policyPermission: permissionPdaFromAccount(company),
+      }).transaction();
+      break;
+    }
+    case "configureGrant": {
+      const grant = pub(input.grant, "grant");
+      const parent = input.parentGrant ? pub(input.parentGrant, "parentGrant") : PROGRAM_ID;
+      if (!Array.isArray(input.recipients)) throw new Error("recipients must be an array");
+      const recipients = input.recipients.map((item) => pub(item, "recipient"));
+      const role = input.role === "finance" ? 1 : input.role === "manager" ? 2 : 0;
+      if (role === 0) throw new Error("role must be finance or manager");
+      tx = await program.methods.configureGrant(
+        role, input.scope ? pub(input.scope, "scope") : PublicKey.default,
+        positiveMicro(input.perPaymentCapMicro), positiveMicro(input.periodCapMicro),
+        recipients, input.mayDelegate === true,
+      ).accountsPartial({ grantor: actor, policy: company, grant, parent }).transaction();
+      break;
+    }
+    case "revokeGrant": {
+      const grant = pub(input.grant, "grant");
+      const parent = input.parentGrant ? pub(input.parentGrant, "parentGrant") : PROGRAM_ID;
+      tx = await program.methods.revokeGrant().accountsPartial({
+        authority: actor, policy: company, grant, parent,
+        ...aclAccounts(grant), parentPermission: parent.equals(PROGRAM_ID) ? PROGRAM_ID : permissionPdaFromAccount(parent),
+        policyPermission: permissionPdaFromAccount(company),
+      }).transaction();
+      break;
+    }
     case "createRequestShell": {
       const id = asId(input.requestId);
       const request = paymentRequestAddress(company, actor, id);
@@ -292,7 +402,16 @@ export async function buildOperation(input: BuildInput, config: {
     }
     case "activateRequestPrivacy": {
       const request = pub(input.request, "request");
-      tx = await program.methods.activateRequestPrivacy().accountsPartial({ founder: actor, policy: company, request, ...aclAccounts(request) }).transaction();
+      tx = await program.methods.activateRequestPrivacy(input.manager ? pub(input.manager, "manager") : PublicKey.default)
+        .accountsPartial({ founder: actor, policy: company, request, ...aclAccounts(request) }).transaction();
+      break;
+    }
+    case "setRequestReaders": {
+      const request = pub(input.request, "request");
+      tx = await program.methods.setRequestReaders(
+        input.includeFinance === true,
+        input.manager ? pub(input.manager, "manager") : PublicKey.default,
+      ).accountsPartial({ founder: actor, policy: company, request, ...aclAccounts(request) }).transaction();
       break;
     }
     case "submitPayment":
@@ -301,11 +420,16 @@ export async function buildOperation(input: BuildInput, config: {
       break;
     case "approvePayment":
     case "rejectPayment":
-      tx = await program.methods[input.operation]().accountsPartial({ finance: actor, policy: company, request: pub(input.request, "request") }).transaction();
+      tx = await program.methods[input.operation]().accountsPartial({
+        actor, policy: company, request: pub(input.request, "request"),
+        grant: input.grant ? pub(input.grant, "grant") : PROGRAM_ID,
+        parentGrant: input.parentGrant ? pub(input.parentGrant, "parentGrant") : PROGRAM_ID,
+      }).transaction();
       break;
     case "executePayment":
       tx = await program.methods.executePayment().accountsPartial({
-        finance: actor, policy: company, request: pub(input.request, "request"),
+        actor, policy: company, request: pub(input.request, "request"),
+        grant: input.grant ? pub(input.grant, "grant") : PROGRAM_ID,
         treasuryToken: pub(input.treasuryToken, "treasuryToken"), recipientToken: pub(input.recipientToken, "recipientToken"),
         tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
       }).transaction();
@@ -340,7 +464,7 @@ export async function buildOperation(input: BuildInput, config: {
     case "fundAgentFloat":
     case "reclaimAgentFloat":
       tx = await program.methods[input.operation](positiveMicro(input.amountMicro)).accountsPartial({
-        finance: actor, policy: company, agentPolicy: pub(input.agentPolicy, "agentPolicy"),
+        founder: actor, policy: company, agentPolicy: pub(input.agentPolicy, "agentPolicy"),
         treasuryToken: pub(input.treasuryToken, "treasuryToken"), agentFloatToken: pub(input.agentFloatToken, "agentFloatToken"),
         tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
       }).transaction();
