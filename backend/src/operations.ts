@@ -30,7 +30,7 @@ function positiveMicro(value: unknown): anchor.BN {
   return new anchor.BN(asMicroAmount(value));
 }
 
-function requestAddress(company: PublicKey, requester: PublicKey, id: anchor.BN): PublicKey {
+export function paymentRequestAddress(company: PublicKey, requester: PublicKey, id: anchor.BN): PublicKey {
   return PublicKey.findProgramAddressSync([
     Buffer.from("payment-request"), company.toBuffer(), requester.toBuffer(), id.toArrayLike(Buffer, "le", 8),
   ], PROGRAM_ID)[0];
@@ -139,6 +139,28 @@ export async function readAgentPolicy(companyAddress: string, agentPolicyAddress
     allowedRecipient: data.allowed_recipient.toBase58(),
     perPaymentCapMicro: data.per_payment_cap_micro.toString(), periodCapMicro: data.period_cap_micro.toString(),
     period: data.period.toString(), spentMicro: data.spent_micro.toString(),
+  };
+}
+
+export function agentPaymentAccounts(companyAddress: string, actorAddress: string,
+  policy: Record<string, unknown>, amountInput: unknown): {
+    amountMicro: number; recipient: string; agentFloatToken: string; recipientToken: string;
+  } {
+  const company = asAddress(companyAddress, "company");
+  const actor = asAddress(actorAddress, "actor");
+  if (policy.company !== company || policy.agent !== actor) throw new Error("Agent is not authorized for this company");
+  if (policy.revoked !== false) throw new Error("Agent policy is revoked");
+  if (policy.mint !== DEVNET_USDC) throw new Error("Agent payment requires Circle devnet USDC policy");
+  const amountMicro = asMicroAmount(amountInput);
+  if (BigInt(amountMicro) > BigInt(String(policy.perPaymentCapMicro)) ||
+      BigInt(amountMicro) > BigInt(String(policy.periodCapMicro))) {
+    throw new Error("Agent payment exceeds its onchain cap");
+  }
+  const recipient = asAddress(policy.allowedRecipient, "allowedRecipient");
+  return {
+    amountMicro, recipient,
+    agentFloatToken: canonicalTokenAccount(policy.address, DEVNET_USDC),
+    recipientToken: canonicalTokenAccount(recipient, DEVNET_USDC),
   };
 }
 
@@ -252,13 +274,13 @@ export async function buildOperation(input: BuildInput, config: {
       break;
     case "createRequestShell": {
       const id = asId(input.requestId);
-      const request = requestAddress(company, actor, id);
+      const request = paymentRequestAddress(company, actor, id);
       tx = await program.methods.createRequestShell(company, id).accountsPartial({ request, requester: actor, systemProgram: SystemProgram.programId }).transaction();
       break;
     }
     case "delegateRequest": {
       const id = asId(input.requestId);
-      const request = requestAddress(company, actor, id);
+      const request = paymentRequestAddress(company, actor, id);
       tx = await program.methods.delegateRequest(company, id).accountsPartial({ request, requester: actor, validator: TEE_VALIDATOR }).transaction();
       break;
     }

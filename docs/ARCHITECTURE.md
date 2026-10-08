@@ -21,7 +21,7 @@ This is the selected architecture for the devnet MVP. The combined Mercury path 
 | MagicBlock eSPL | USDC balance backed by the global vault; token movement on the PER | Team roles or invoice decisions |
 | Private Payments API | Builds unsigned wallet transactions for inbound `base → ephemeral` receipts and recipient-signed withdrawals; a queued company-to-base payout needs separate program integration | Signing for the company PDA or enforcing Mercury policy |
 | Web app/backend | Wallet login, private UI, request orchestration, encrypted document storage, indexing, payment status | Custody of treasury keys or authoritative spend decisions |
-| AI worker | Classifies an invoice and proposes a payment; later spends only from a small isolated float | Changing policies or moving unrestricted treasury funds |
+| AI worker | Extracts an invoice into a reviewed draft; a separate Agent signer may later spend only from a small isolated float | Changing policies or moving unrestricted treasury funds |
 
 The hosted API uses private eSPL/PER infrastructure for payments. Mercury uses a *direct PER application account* because company budgets, approval state, and authorized views must also be confidential. Inbound API use is a required devnet proof because the company destination owner is an off-curve Mercury PDA.
 
@@ -92,7 +92,9 @@ For the first functional devnet payroll demo, prove two recipients, one human-ap
 | Co-sign | Co-sign a specified payment request | Required human approval remains mandatory; agent signature alone releases nothing |
 | Execute | Sign an allowed payment from the separate agent float | No per-payment human signature within the preapproved destination and hard caps; treasury-to-float funding requires human approval |
 
-The intended first MVP agent is an **invoice/request agent** in Suggest mode. It would extract an amount, recipient, category, and explanation, then submit a request; that worker is not implemented yet. The current contract proves Execute mode with a **small isolated float**: Finance first approves its allocation, then the agent can pay only its preapproved destination within its per-payment and period caps. Co-sign mode is part of the planned permission model. Revocation blocks the next spend, and a lost agent key cannot authorize a transfer from the main treasury.
+The first MVP agent is an **invoice/request agent** in Suggest mode. A configurable model now extracts invoice fields from text. Mercury maps the named vendor to a registered wallet and checks an invoice cap in deterministic backend code; model output never selects a payment address. The result is a draft and the exact request setup operations. No transaction is signed or submitted by the AI endpoint. In the current contract, a Founder must activate the privacy permission for each new request before the Agent can sign `submitPayment`; Finance then approves and executes. The backend does not yet ingest invoice files, detect duplicate invoices, retain encrypted drafts, or run an Agent signing service. Invoice text remains in memory during a request and goes to a local model by default; remote model use requires explicit configuration.
+
+The current contract proves Execute mode with a **small isolated float**: Finance first approves its allocation, then the agent can pay only its preapproved destination within its per-payment and period caps. The backend can now read a private AgentPolicy and build an unsigned `agentPay` transaction with derived USDC token accounts, but the Agent must sign and the Circle USDC Agent flow has not yet been proven live. Co-sign mode is part of the planned permission model. Revocation blocks the next spend, and a lost agent key cannot authorize a transfer from the main treasury.
 
 No autonomous payroll release, general invoice auto-pay, x402 production integration, yield, or fiat rails in this MVP. Human-approved private payroll payouts are in scope as a treasury workflow.
 

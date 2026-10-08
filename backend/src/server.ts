@@ -1,11 +1,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { Connection } from "@solana/web3.js";
+import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import {
   DEVNET_USDC, asAddress, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
 } from "./magicblock.ts";
 import {
-  BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, buildOperation,
+  BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, agentPaymentAccounts, buildOperation,
   paymentExecutionAccounts, paymentStatusFromRequest,
   readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTreasurySnapshot,
 } from "./operations.ts";
@@ -18,6 +20,15 @@ const port = Number(process.env.PORT ?? "8787");
 function reply(res: ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
   res.end(JSON.stringify(body));
+}
+
+function matchesAgentApiKey(header: string | undefined): boolean {
+  const expected = process.env.MERCURY_AGENT_API_KEY;
+  const supplied = header?.match(/^Bearer (.+)$/)?.[1];
+  if (!expected || expected.length < 16 || !supplied) return false;
+  const left = Buffer.from(expected);
+  const right = Buffer.from(supplied);
+  return left.length === right.length && timingSafeEqual(left, right);
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -40,6 +51,25 @@ createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
       return reply(res, 200, { ok: true, companyAddress, programId: PROGRAM_ID.toBase58() });
+    }
+    if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
+      if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });
+      if (!matchesAgentApiKey(req.headers.authorization)) return reply(res, 401, { error: "Agent API key required" });
+      if (process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) throw new Error("Invoice agent requires the Circle devnet USDC company");
+      const body = await readJson(req);
+      const suggestion = await suggestInvoicePayment({
+        invoiceText: body.invoiceText,
+        vendorId: body.vendorId,
+        companyAddress,
+        founderAddress,
+        agentAddress: asAddress(process.env.MERCURY_SUGGEST_AGENT_ADDRESS, "MERCURY_SUGGEST_AGENT_ADDRESS"),
+        registry: parseVendorRegistry(process.env.MERCURY_VENDOR_REGISTRY_JSON ?? ""),
+        modelUrl: process.env.MERCURY_LLM_URL ?? "",
+        modelName: process.env.MERCURY_LLM_MODEL ?? "",
+        modelApiKey: process.env.MERCURY_LLM_API_KEY,
+        allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1",
+      });
+      return reply(res, 200, suggestion);
     }
     if (req.method === "GET" && req.url?.startsWith("/v1/delegation/")) {
       const account = decodeURIComponent(req.url.slice("/v1/delegation/".length));
@@ -104,6 +134,27 @@ createServer(async (req, res) => {
       if (!token) throw new Error("TEE auth token required");
       const agentPolicy = decodeURIComponent(req.url.slice("/v1/agent-policies/".length));
       return reply(res, 200, await readAgentPolicy(companyAddress, agentPolicy, token));
+    }
+    if (req.method === "POST" && req.url?.startsWith("/v1/agents/") && req.url.endsWith("/build-payment")) {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Agent USDC payments are not enabled for this company" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const agentPolicyAddress = decodeURIComponent(req.url.slice("/v1/agents/".length, -"/build-payment".length));
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      const policy = await readAgentPolicy(companyAddress, agentPolicyAddress, token);
+      const accounts = agentPaymentAccounts(companyAddress, actor, policy, body.amountMicro);
+      const transaction = await buildOperation({
+        operation: "agentPay", actor, agentPolicy: agentPolicyAddress,
+        amountMicro: accounts.amountMicro, agentFloatToken: accounts.agentFloatToken,
+        recipientToken: accounts.recipientToken,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      return reply(res, 200, {
+        agentPolicyAddress, recipient: accounts.recipient, amountMicro: accounts.amountMicro,
+        transaction,
+      });
     }
     if (req.method === "GET" && req.url?.startsWith("/v1/recipient-balance/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];

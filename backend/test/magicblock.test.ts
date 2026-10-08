@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { preparePrivateReceive, prepareRecipientOnboarding, prepareRecipientWithdrawal } from "../src/magicblock.ts";
-import { paymentExecutionAccounts, paymentStatusFromRequest } from "../src/operations.ts";
+import { agentPaymentAccounts, paymentExecutionAccounts, paymentStatusFromRequest } from "../src/operations.ts";
 
 test("private receive builder fixes the route and leaves payer signing to the client", async () => {
   const payer = Keypair.generate().publicKey.toBase58();
@@ -128,6 +128,24 @@ test("approved USDC payout derives the proven company and recipient token accoun
   assert.throws(() => paymentExecutionAccounts(company, finance, { ...policy, reservedMicro: "9999" }, request), /reservation is missing/);
   assert.throws(() => paymentExecutionAccounts(company, finance, policy, { ...request, approvedPeriod: "2" }), /another budget period/);
   assert.throws(() => paymentExecutionAccounts(company, Keypair.generate().publicKey.toBase58(), policy, request), /Finance must act/);
+});
+
+test("agent USDC payment builder input is pinned to policy agent, recipient, and caps", () => {
+  const company = "362A56CsCtCWC3zRLS6ho5MYgp53q2REe6zG9fg8QAKW";
+  const agent = Keypair.generate().publicKey.toBase58();
+  const recipient = Keypair.generate().publicKey.toBase58();
+  const policy = {
+    address: Keypair.generate().publicKey.toBase58(), company, agent,
+    mint: "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU", revoked: false,
+    allowedRecipient: recipient, perPaymentCapMicro: "1000", periodCapMicro: "5000",
+  };
+  const accounts = agentPaymentAccounts(company, agent, policy, 1000);
+  assert.equal(accounts.recipient, recipient);
+  assert.equal(accounts.amountMicro, 1000);
+  assert.notEqual(accounts.agentFloatToken, accounts.recipientToken);
+  assert.throws(() => agentPaymentAccounts(company, agent, policy, 1001), /exceeds its onchain cap/);
+  assert.throws(() => agentPaymentAccounts(company, agent, { ...policy, revoked: true }, 1), /revoked/);
+  assert.throws(() => agentPaymentAccounts(company, Keypair.generate().publicKey.toBase58(), policy, 1), /not authorized/);
 });
 
 test("recipient withdrawal is owner-signed and pinned to the company PER validator", async () => {
