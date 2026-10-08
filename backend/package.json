@@ -14,6 +14,7 @@
     "devnet:usdc-payout": "node --experimental-strip-types scripts/devnet-usdc-payout.ts",
     "devnet:usdc-withdraw": "node --experimental-strip-types scripts/devnet-usdc-withdraw.ts",
     "devnet:usdc-verify": "node --experimental-strip-types scripts/verify-devnet-usdc-proof.ts",
+    "devnet:usdc-agent": "node --experimental-strip-types scripts/devnet-usdc-agent.ts",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
   },

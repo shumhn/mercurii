@@ -134,7 +134,8 @@ export async function readAgentPolicy(companyAddress: string, agentPolicyAddress
   }>(agentPolicy, "AgentPolicy", teeToken);
   if (!data.company.equals(company) || !data.private_ready) throw new Error("Agent policy is not active for this company");
   return {
-    address: agentPolicy.toBase58(), founder: data.founder.toBase58(), finance: data.finance.toBase58(),
+    address: agentPolicy.toBase58(), company: data.company.toBase58(),
+    founder: data.founder.toBase58(), finance: data.finance.toBase58(),
     agent: data.agent.toBase58(), mint: data.mint.toBase58(), revoked: data.revoked,
     allowedRecipient: data.allowed_recipient.toBase58(),
     perPaymentCapMicro: data.per_payment_cap_micro.toString(), periodCapMicro: data.period_cap_micro.toString(),

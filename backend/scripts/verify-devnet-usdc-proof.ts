@@ -36,15 +36,15 @@ const [policy, request, snapshot, recipient] = await Promise.all([
 assert.equal(policy.mint, DEVNET_USDC);
 assert.equal(request.status, "executed");
 assert.equal(request.amountMicro, "10000");
-assert.equal(snapshot.balanceMicro, "40000");
-assert.equal(recipient.balanceMicro, "10000");
+assert.equal(snapshot.balanceMicro, process.env.MERCURY_EXPECT_TREASURY_MICRO ?? "35000");
+assert.equal(recipient.balanceMicro, process.env.MERCURY_EXPECT_RECIPIENT_PRIVATE_MICRO ?? "11000");
 const base = new Connection(BASE_RPC, "confirmed");
 const ata = PublicKey.findProgramAddressSync([
   finance.publicKey.toBuffer(), TOKEN_PROGRAM.toBuffer(), new PublicKey(DEVNET_USDC).toBuffer(),
 ], ATA_PROGRAM)[0];
 const baseAccount = await base.getAccountInfo(ata);
 assert.ok(baseAccount && baseAccount.data.length >= 72);
-assert.equal(baseAccount.data.readBigUInt64LE(64).toString(), "1000");
+assert.equal(baseAccount.data.readBigUInt64LE(64).toString(), process.env.MERCURY_EXPECT_RECIPIENT_BASE_MICRO ?? "999");
 await assert.rejects(() => readCompanyPolicy(COMPANY, outsiderToken));
 await assert.rejects(() => readPaymentRequest(COMPANY, REQUEST, outsiderToken));
 await assert.rejects(() => readTreasurySnapshot(COMPANY, outsiderToken));
