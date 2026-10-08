@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { preparePrivateReceive, prepareRecipientWithdrawal } from "../src/magicblock.ts";
+import { preparePrivateReceive, prepareRecipientOnboarding, prepareRecipientWithdrawal } from "../src/magicblock.ts";
+import { paymentStatusFromRequest } from "../src/operations.ts";
 
 test("private receive builder fixes the route and leaves payer signing to the client", async () => {
   const payer = Keypair.generate().publicKey.toBase58();
@@ -58,6 +59,55 @@ test("rejects a private receive routed to another PER validator", async () => {
     },
   }), /different PER validator/);
   assert.equal(sent.validator, expectedValidator);
+});
+
+test("recipient onboarding builds a payer-signed private deposit on the selected PER", async () => {
+  const payer = Keypair.generate().publicKey.toBase58();
+  const recipient = Keypair.generate().publicKey.toBase58();
+  const validator = Keypair.generate().publicKey.toBase58();
+  let sent: Record<string, unknown> = {};
+  const result = await prepareRecipientOnboarding({
+    payer, recipient, amountMicro: 1_000, expectedValidator: validator,
+    fetchImpl: async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        kind: "transfer", transactionBase64: "AQID", sendTo: "base",
+        requiredSigners: [payer], validator,
+      }), { status: 200 });
+    },
+  });
+  assert.equal(sent.to, recipient);
+  assert.equal(sent.mint, "4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
+  assert.equal(sent.amount, 1_000);
+  assert.equal(sent.visibility, "private");
+  assert.equal(sent.fromBalance, "base");
+  assert.equal(sent.toBalance, "ephemeral");
+  assert.equal(sent.validator, validator);
+  assert.deepEqual(result.requiredSigners, [payer]);
+});
+
+test("recipient onboarding rejects a PDA and a different PER validator", async () => {
+  const payer = Keypair.generate().publicKey.toBase58();
+  const recipient = Keypair.generate().publicKey.toBase58();
+  const validator = Keypair.generate().publicKey.toBase58();
+  const [pda] = PublicKey.findProgramAddressSync([Buffer.from("recipient")], new PublicKey(validator));
+  await assert.rejects(() => prepareRecipientOnboarding({
+    payer, recipient: pda.toBase58(), amountMicro: 1,
+  }), /wallet owner, not a PDA/);
+  await assert.rejects(() => prepareRecipientOnboarding({
+    payer, recipient, amountMicro: 1, expectedValidator: validator,
+    fetchImpl: async () => new Response(JSON.stringify({
+      kind: "transfer", transactionBase64: "AQID", sendTo: "base", requiredSigners: [payer],
+      validator: Keypair.generate().publicKey.toBase58(),
+    }), { status: 200 }),
+  }), /different PER validator/);
+});
+
+test("payment status follows the atomic private request state", () => {
+  const request = { address: Keypair.generate().publicKey.toBase58(), recipient: Keypair.generate().publicKey.toBase58(), amountMicro: "10000" };
+  assert.equal(paymentStatusFromRequest({ ...request, status: "approved" }).paymentSettled, false);
+  assert.equal(paymentStatusFromRequest({ ...request, status: "executed" }).paymentSettled, true);
+  assert.throws(() => paymentStatusFromRequest({ ...request, status: "mystery" }), /Unknown private payment request status/);
 });
 
 test("recipient withdrawal is owner-signed and pinned to the company PER validator", async () => {

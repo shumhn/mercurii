@@ -52,6 +52,38 @@ export async function preparePrivateReceive(args: {
 }): Promise<UnsignedPrivateReceive> {
   const payer = asAddress(args.payer, "payer");
   const company = asAddress(args.company, "company");
+  return buildPrivateDeposit({ ...args, payer, destination: company });
+}
+
+export async function prepareRecipientOnboarding(args: {
+  payer: unknown;
+  recipient: unknown;
+  amountMicro: unknown;
+  teeToken?: string;
+  fetchImpl?: typeof fetch;
+  paymentsUrl?: string;
+  cluster?: string;
+  expectedValidator?: string;
+}): Promise<UnsignedPrivateReceive> {
+  const payer = asAddress(args.payer, "payer");
+  const recipient = asAddress(args.recipient, "recipient");
+  if (!PublicKey.isOnCurve(new PublicKey(recipient).toBytes())) {
+    throw new Error("Recipient onboarding requires a wallet owner, not a PDA");
+  }
+  return buildPrivateDeposit({ ...args, payer, destination: recipient });
+}
+
+async function buildPrivateDeposit(args: {
+  payer: string;
+  destination: string;
+  amountMicro: unknown;
+  teeToken?: string;
+  fetchImpl?: typeof fetch;
+  paymentsUrl?: string;
+  cluster?: string;
+  expectedValidator?: string;
+}): Promise<UnsignedPrivateReceive> {
+  const { payer, destination } = args;
   const amount = asMicroAmount(args.amountMicro);
   const mint = DEVNET_USDC;
   const cluster = args.cluster ?? "devnet-private";
@@ -64,7 +96,7 @@ export async function preparePrivateReceive(args: {
     },
     body: JSON.stringify({
       from: payer,
-      to: company,
+      to: destination,
       mint,
       amount,
       visibility: "private",

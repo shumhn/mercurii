@@ -2,11 +2,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { Connection } from "@solana/web3.js";
 import {
   DEVNET_USDC, asAddress, delegationStatus, preparePrivateReceive,
-  prepareRecipientWithdrawal, readRecipientBalance,
+  prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
 } from "./magicblock.ts";
 import {
   BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, buildOperation,
-  readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTreasurySnapshot,
+  paymentStatusFromRequest, readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTreasurySnapshot,
 } from "./operations.ts";
 
 const companyAddress = asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_COMPANY_ADDRESS");
@@ -60,6 +60,12 @@ createServer(async (req, res) => {
       const request = decodeURIComponent(req.url.slice("/v1/payment-requests/".length));
       return reply(res, 200, await readPaymentRequest(companyAddress, request, token));
     }
+    if (req.method === "GET" && req.url?.startsWith("/v1/payments/") && req.url.endsWith("/status")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const request = decodeURIComponent(req.url.slice("/v1/payments/".length, -"/status".length));
+      return reply(res, 200, paymentStatusFromRequest(await readPaymentRequest(companyAddress, request, token)));
+    }
     if (req.method === "GET" && req.url?.startsWith("/v1/agent-policies/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -91,6 +97,22 @@ createServer(async (req, res) => {
         expectedValidator: TEE_VALIDATOR.toBase58(),
       });
       return reply(res, 200, { status: "unsigned", companyAddress, transaction });
+    }
+    if (req.method === "POST" && req.url === "/v1/recipient-onboard/build") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Private recipient onboarding requires the verified Circle devnet USDC receive flow" });
+      }
+      const body = await readJson(req);
+      const recipient = asAddress(body.recipient, "recipient");
+      const transaction = await prepareRecipientOnboarding({
+        payer: body.payer,
+        recipient,
+        amountMicro: body.amountMicro,
+        teeToken: typeof body.teeToken === "string" ? body.teeToken : undefined,
+        cluster: process.env.MAGICBLOCK_CLUSTER ?? "devnet-private",
+        expectedValidator: TEE_VALIDATOR.toBase58(),
+      });
+      return reply(res, 200, { status: "unsigned", recipient, transaction });
     }
     if (req.method === "POST" && req.url === "/v1/recipient-withdraw/build") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_WITHDRAW !== "1") {

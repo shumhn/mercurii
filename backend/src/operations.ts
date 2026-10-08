@@ -88,6 +88,21 @@ export async function readPaymentRequest(companyAddress: string, requestAddress:
   };
 }
 
+export function paymentStatusFromRequest(request: Record<string, unknown>): Record<string, unknown> {
+  const status = request.status;
+  if (typeof status !== "string" || !["empty", "submitted", "approved", "executed", "rejected"].includes(status)) {
+    throw new Error("Unknown private payment request status");
+  }
+  return {
+    requestAddress: request.address,
+    status,
+    recipient: request.recipient,
+    amountMicro: request.amountMicro,
+    paymentSettled: status === "executed",
+    evidence: "Mercury private request state; executed is written atomically with its SPL token transfer",
+  };
+}
+
 export async function readAgentPolicy(companyAddress: string, agentPolicyAddress: string, teeToken: string): Promise<Record<string, unknown>> {
   const company = pub(companyAddress, "company");
   const agentPolicy = pub(agentPolicyAddress, "agentPolicy");
