@@ -10,6 +10,7 @@ import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { bindSignedPayment, getPayment, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
+import { flowReceiptOperation, getOrCreatePaymentFlow, getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
 import {
   DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
@@ -85,6 +86,43 @@ async function executionPlan(requestAddress: string, actor: string, grantInput: 
       ? "Last treasury snapshot is below this payment; fund and resync before signing" : null,
     transaction,
   };
+}
+
+async function approvalPlan(requestAddress: string, actor: string, grantInput: unknown, parentGrantInput: unknown,
+  token: string) {
+  const [policy, request] = await Promise.all([
+    readCompanyPolicy(companyAddress, token), readPaymentRequest(companyAddress, requestAddress, token),
+  ]);
+  if (request.status !== "submitted") throw new Error("Payment request is not awaiting approval");
+  let grantAddress: string | null = null;
+  let parentGrantAddress: string | null = null;
+  if (actor !== policy.founder) {
+    grantAddress = asAddress(grantInput, "grant");
+    const grant = await readTeamGrant(companyAddress, grantAddress, token);
+    if (grant.member !== actor || grant.active !== true || grant.revoked !== false ||
+        !Array.isArray(grant.recipients) || !grant.recipients.includes(request.recipient) ||
+        BigInt(String(request.amountMicro)) > BigInt(String(grant.perPaymentCapMicro))) {
+      throw new Error("Approval grant does not allow this payment");
+    }
+    if (grant.role === 1) {
+      if (actor !== policy.finance || grant.grantor !== policy.founder ||
+          grant.parent !== PublicKey.default.toBase58()) throw new Error("Invalid Finance approval grant");
+    } else if (grant.role === 2) {
+      parentGrantAddress = asAddress(parentGrantInput, "parentGrant");
+      if (grant.parent !== parentGrantAddress) throw new Error("Manager grant has a different parent");
+      const parent = await readTeamGrant(companyAddress, parentGrantAddress, token);
+      if (parent.member !== grant.grantor || parent.member !== policy.finance || parent.active !== true ||
+          parent.revoked !== false || parent.role !== 1 || parent.mayDelegate !== true) {
+        throw new Error("Parent Finance grant does not authorize Manager approval");
+      }
+    } else {
+      throw new Error("Grant role cannot approve payments");
+    }
+  }
+  const transaction = await buildOperation({ operation: "approvePayment", actor, request: requestAddress,
+    grant: grantAddress, parentGrant: parentGrantAddress },
+  { company: companyAddress, founder: founderAddress, teeToken: token });
+  return { requestAddress, transaction };
 }
 
 async function paymentChainObservation(signature: string, token: string): Promise<{
@@ -340,6 +378,90 @@ createServer(async (req, res) => {
         request: requestAddress, requester: String(request.requester), requestId: String(request.id) });
       return reply(res, 200, { record: reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
         requestStatus: request.status });
+    }
+    const paymentFlow = req.url?.match(/^\/v1\/payment-flows\/([^/?]+)(?:\/next)?$/);
+    if (paymentFlow && req.method === "GET" && !req.url?.endsWith("/next")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const flow = getPaymentFlow(paymentFlow[1], companyAddress);
+      const inspected = await inspectPaymentFlow(flow, founderAddress, token);
+      const result: Record<string, unknown> = {
+        paymentId: flow.paymentId, request: flow.request, requestId: flow.requestId, requester: flow.requester,
+        ...inspected,
+      };
+      if (["approved", "executed", "rejected"].includes(inspected.observation.status)) {
+        const record = registerPayment({ paymentId: flow.paymentId, company: companyAddress,
+          request: flow.request, requester: flow.requester, requestId: flow.requestId });
+        result.record = reconcilePayment(record.paymentId, companyAddress, inspected.observation.status, null);
+        result.paymentJob = {
+          prepare: `/v1/payment-jobs/${flow.paymentId}/prepare`,
+          status: `/v1/payment-jobs/${flow.paymentId}`,
+          snapshotSync: `/v1/payment-jobs/${flow.paymentId}/snapshot-sync`,
+        };
+      }
+      return reply(res, 200, result);
+    }
+    if (paymentFlow && req.method === "POST" && req.url?.endsWith("/next")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const { flow, terms } = getOrCreatePaymentFlow(paymentFlow[1], companyAddress, body);
+      const inspected = await inspectPaymentFlow(flow, founderAddress, token);
+      const baseResult = {
+        paymentId: flow.paymentId, request: flow.request, requestId: flow.requestId, requester: flow.requester,
+        observation: inspected.observation, step: inspected.step,
+      };
+      if (inspected.step.status === "wait") return reply(res, 200, baseResult);
+      if (inspected.step.status === "ready_to_execute" || inspected.step.status === "ready" ||
+          inspected.step.status === "rejected") {
+        const status = inspected.observation.status;
+        const record = registerPayment({ paymentId: flow.paymentId, company: companyAddress,
+          request: flow.request, requester: flow.requester, requestId: flow.requestId });
+        return reply(res, 200, { ...baseResult,
+          record: reconcilePayment(record.paymentId, companyAddress, status, null),
+          paymentJob: {
+            prepare: `/v1/payment-jobs/${flow.paymentId}/prepare`,
+            status: `/v1/payment-jobs/${flow.paymentId}`,
+            snapshotSync: `/v1/payment-jobs/${flow.paymentId}/snapshot-sync`,
+          },
+        });
+      }
+      const actor = asAddress(body.actor, "actor");
+      let operation = inspected.step.operation!;
+      let transaction: Awaited<ReturnType<typeof buildOperation>>;
+      if (inspected.step.status === "approval_required") {
+        operation = "approvePayment";
+        const plan = await approvalPlan(flow.request, actor, body.grant, body.parentGrant, token);
+        transaction = plan.transaction;
+      } else {
+        if (actor !== inspected.step.actor) throw new Error(`This step requires ${inspected.step.actor}`);
+        const input: Record<string, unknown> = { operation, actor };
+        if (operation === "createRequestShell" || operation === "delegateRequest") input.requestId = flow.requestId;
+        if (operation === "initRequestPermission") input.request = flow.request;
+        if (operation === "activateRequestPrivacy") {
+          input.request = flow.request;
+          input.includeFinance = terms.includeFinance;
+          input.manager = terms.manager;
+        }
+        if (operation === "submitPayment") {
+          input.request = flow.request;
+          input.recipient = terms.recipient;
+          input.amountMicro = terms.amountMicro;
+        }
+        transaction = await buildOperation(input as { operation: string; actor: string }, {
+          company: companyAddress, founder: founderAddress, teeToken: token,
+        });
+      }
+      const operationKey = flowReceiptOperation(flow, operation);
+      const prior = latestOnboardingReceipt(companyAddress, flow.request, operationKey);
+      if (prior && (prior.status === "built" || prior.status === "pending" || prior.status === "confirmed")) {
+        return reply(res, 200, { ...baseResult, step: { status: "wait", operation: null, actor: null,
+          sendTo: null, reason: "Wait for the prior signed step to confirm and state to propagate" },
+          receiptId: prior.id, receiptStatus: prior.status, transaction: null });
+      }
+      const receipt = recordOnboardingBuild({ company: companyAddress, target: flow.request, operation: operationKey,
+        chain: transaction.sendTo, transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { ...baseResult, transaction, receiptId: receipt.id });
     }
     const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync))?$/);
     if (paymentJob && req.method === "GET" && !paymentJob[2]) {
