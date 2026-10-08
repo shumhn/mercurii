@@ -47,6 +47,12 @@ export function getPayment(id: unknown, company: string): PaymentRecord {
   return record;
 }
 
+export function listPayments(companyInput: unknown, limit = 50): PaymentRecord[] {
+  const company = asAddress(companyInput, "company");
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error("Payment history limit must be 1 to 100");
+  return readJournal().payments.filter((item) => item.company === company).slice(-limit).reverse();
+}
+
 export function registerPayment(args: {
   paymentId: unknown; company: string; request: string; requester: string; requestId: string;
 }): PaymentRecord {

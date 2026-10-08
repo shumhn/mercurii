@@ -14,7 +14,7 @@ import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
-import { bindSignedPayment, getPayment, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
+import { bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import { createPayrollRun, getPayrollRun } from "./payroll-run.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
   getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
@@ -767,6 +767,35 @@ createServer(async (req, res) => {
       const receipt = recordOnboardingBuild({ company: companyAddress, target: flow.request, operation: operationKey,
         chain: transaction.sendTo, transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { ...baseResult, transaction, receiptId: receipt.id });
+    }
+    if (req.method === "GET" && (req.url === "/v1/payment-jobs" || req.url?.startsWith("/v1/payment-jobs?"))) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      const query = new URL(req.url, "http://localhost");
+      const limit = query.searchParams.has("limit") ? Number(query.searchParams.get("limit")) : 50;
+      const snapshot = await readTreasurySnapshot(companyAddress, token).catch(() => null);
+      const rows = [];
+      let unavailableCount = 0;
+      for (const record of listPayments(companyAddress, limit)) {
+        try {
+          const request = await readPaymentRequest(companyAddress, record.request, token);
+          const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
+          const updated = reconcilePayment(record.paymentId, companyAddress, String(request.status), chain?.status ?? null);
+          rows.push({ record: updated, requestStatus: request.status, chainStatus: chain?.status ?? null,
+            snapshotNeedsSync: request.status === "executed" && chain?.status === "confirmed" &&
+              chain.slot !== null && snapshot !== null
+              ? BigInt(snapshot.updatedSlot) < BigInt(chain.slot) : null,
+            integrityWarning: chain?.status === "confirmed" && request.status !== "executed"
+              ? "Confirmed signature without executed request" : null });
+        } catch {
+          // PER ACL can hide records outside this reader's scope.
+          unavailableCount++;
+        }
+      }
+      return reply(res, 200, { payments: rows, unavailableCount,
+        snapshotUpdatedSlot: snapshot?.updatedSlot ?? null });
     }
     const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync))?$/);
     if (paymentJob && req.method === "GET" && !paymentJob[2]) {
