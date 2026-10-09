@@ -5,8 +5,12 @@ import { spawn } from "node:child_process";
 import { Connection, Keypair, Transaction, VersionedTransaction } from "@solana/web3.js";
 import { getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
 import nacl from "tweetnacl";
+import bs58 from "bs58";
 import { BASE_RPC, TEE_RPC, TEE_VALIDATOR } from "../src/operations.ts";
 import { DEVNET_USDC, prepareRecipientOnboarding, readRecipientBalance } from "../src/magicblock.ts";
+import { openPayrollRoster, sealPayrollRoster } from "../src/payroll-roster-crypto.ts";
+import { localDate } from "../src/payroll-schedule.ts";
+import { payrollScheduleMessage } from "../src/payroll-schedule-auth.ts";
 
 const COMPANY = process.env.MERCURY_COMPANY_ADDRESS;
 if (!COMPANY) throw new Error("MERCURY_COMPANY_ADDRESS is required");
@@ -27,6 +31,10 @@ const expectSecondFailure = process.env.MERCURY_PAYROLL_EXPECT_SECOND_FAILURE ==
 const auth = await getAuthToken(TEE_RPC, founder.publicKey,
   async (message: Uint8Array) => nacl.sign.detached(message, founder.secretKey));
 const token = auth.token;
+function signedSchedule(operation: "create" | "update" | "launch", body: Record<string, unknown>): Record<string, unknown> {
+  return { ...body, signature: bs58.encode(nacl.sign.detached(
+    payrollScheduleMessage(operation, COMPANY!, body), founder.secretKey)) };
+}
 const port = Number(process.env.MERCURY_PAYROLL_PORT ?? "18787");
 const base = `http://127.0.0.1:${port}`;
 const server = spawn(process.execPath, ["--experimental-strip-types", "src/server.ts"], {
@@ -38,8 +46,8 @@ const server = spawn(process.execPath, ["--experimental-strip-types", "src/serve
 });
 server.stderr.on("data", (chunk) => process.stderr.write(chunk));
 
-async function api(path: string, body?: Record<string, unknown>): Promise<any> {
-  const response = await fetch(`${base}${path}`, { method: body ? "POST" : "GET",
+async function api(path: string, body?: Record<string, unknown>, method?: "GET" | "POST" | "PATCH"): Promise<any> {
+  const response = await fetch(`${base}${path}`, { method: method ?? (body ? "POST" : "GET"),
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
     body: body ? JSON.stringify(body) : undefined });
   const value = await response.json() as Record<string, unknown>;
@@ -111,7 +119,7 @@ async function onboardFailedRecipient(): Promise<string> {
 
 await waitForServer();
 try {
-  const runId = randomUUID();
+  let runId = randomUUID();
   const payeeIds = recipients.map(() => randomUUID());
   for (const [index, wallet] of recipients.entries()) {
     await api("/v1/payees", { actor: founder.publicKey.toBase58(), payeeId: payeeIds[index],
@@ -126,10 +134,32 @@ try {
   assert.equal(preview.budgetCoversValidRows, true);
   const roster = { runId, requester: founder.publicKey.toBase58(),
     items: preview.items.map((item: any) => ({ recipient: item.recipient, amountMicro: item.amountMicro })) };
-  const run = await api("/v1/payroll-runs", roster);
+  const useSchedule = process.env.MERCURY_PAYROLL_TEST_SCHEDULE === "1";
+  let scheduleId: string | null = null;
+  let run: any;
+  if (useSchedule) {
+    scheduleId = randomUUID();
+    const payDate = localDate(new Date(), "Asia/Kathmandu");
+    const passphrase = `devnet-only-${randomUUID()}`;
+    const encryptedRoster = sealPayrollRoster({ requester: roster.requester, items: roster.items }, passphrase);
+    const schedule = await api("/v1/payroll-schedules", signedSchedule("create", { actor: founder.publicKey.toBase58(),
+      scheduleId, name: "Devnet payroll", cadence: "weekly", firstPayDate: payDate,
+      timeZone: "Asia/Kathmandu", encryptedRoster }));
+    assert.equal(schedule.dueCycles[0]?.payDate, payDate);
+    const recovered = await api(`/v1/payroll-schedules/${scheduleId}`);
+    assert.deepEqual(openPayrollRoster(recovered.encryptedRoster, passphrase),
+      { requester: roster.requester, items: roster.items });
+    const launchBody = signedSchedule("launch", { actor: founder.publicKey.toBase58(), scheduleId,
+      payDate, requester: roster.requester, items: roster.items });
+    run = await api(`/v1/payroll-schedules/${scheduleId}/launch`, launchBody);
+    runId = run.runId;
+    assert.equal((await api(`/v1/payroll-schedules/${scheduleId}/launch`, launchBody)).runId, runId);
+  } else {
+    run = await api("/v1/payroll-runs", roster);
+    assert.deepEqual((await api("/v1/payroll-runs", roster)).items, run.items);
+  }
   assert.equal((await api("/v1/payroll-runs")).runs.some((entry: { runId: string }) => entry.runId === runId), true);
   assert.equal(run.items.length, recipients.length);
-  assert.deepEqual((await api("/v1/payroll-runs", roster)).items, run.items);
   for (const [index, item] of run.items.entries()) {
     for (let attempt = 0; attempt < 45; attempt++) {
       const next = await api(item.next, { actor: founder.publicKey.toBase58(), requester: founder.publicKey.toBase58(),
@@ -231,7 +261,15 @@ try {
     assert.ok(history.payments.some((row: any) => row.record.paymentId === item.paymentId &&
       row.record.state === "settled" && row.payee?.payeeId === payeeIds[index]));
   }
-  process.stdout.write(JSON.stringify({ result: "PASS", runId, approvalSignatures,
+  if (scheduleId) {
+    const schedule = await api(`/v1/payroll-schedules/${scheduleId}`);
+    const paused = await api(`/v1/payroll-schedules/${scheduleId}`,
+      signedSchedule("update", { actor: founder.publicKey.toBase58(), scheduleId,
+        expectedRevision: schedule.revision, paused: true }), "PATCH");
+    assert.equal(paused.paused, true);
+    assert.equal(paused.revision, schedule.revision + 1);
+  }
+  process.stdout.write(JSON.stringify({ result: "PASS", runId, scheduleId, approvalSignatures,
     payoutSignatures: signatures, failedSignature, onboardingSignature, settledCount: final.settledCount,
     requests: run.items.map((item: any) => item.request) }, null, 2) + "\n");
 } finally {
