@@ -16,7 +16,13 @@ function key(name: string): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, "utf8"))));
 }
 const founder = key("MERCURY_FOUNDER_KEYPAIR");
-const recipients = [key("MERCURY_PAYROLL_RECIPIENT_1_KEYPAIR"), key("MERCURY_PAYROLL_RECIPIENT_2_KEYPAIR")];
+const recipientPaths = process.env.MERCURY_PAYROLL_RECIPIENT_KEYPAIRS?.split(",").map((path) => path.trim()).filter(Boolean);
+const recipients = recipientPaths?.length
+  ? recipientPaths.map((path) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, "utf8")))))
+  : [key("MERCURY_PAYROLL_RECIPIENT_1_KEYPAIR"), key("MERCURY_PAYROLL_RECIPIENT_2_KEYPAIR")];
+if (recipients.length < 2 || new Set(recipients.map((wallet) => wallet.publicKey.toBase58())).size !== recipients.length) {
+  throw new Error("Provide at least two distinct payroll recipient wallets");
+}
 const expectSecondFailure = process.env.MERCURY_PAYROLL_EXPECT_SECOND_FAILURE === "1";
 const auth = await getAuthToken(TEE_RPC, founder.publicKey,
   async (message: Uint8Array) => nacl.sign.detached(message, founder.secretKey));
@@ -111,18 +117,18 @@ try {
     await api("/v1/payees", { actor: founder.publicKey.toBase58(), payeeId: payeeIds[index],
       kind: "employee", teamId: "demo", recipient: wallet.publicKey.toBase58() });
   }
-  assert.ok((await api("/v1/payees")).payees.length >= 2);
-  const csvText = `wallet,amount_usdc\n${recipients[0]!.publicKey.toBase58()},0.000001\n` +
-    `${recipients[1]!.publicKey.toBase58()},0.000001\n`;
+  assert.ok((await api("/v1/payees")).payees.length >= recipients.length);
+  const csvText = `wallet,amount_usdc\n${recipients.map((wallet) =>
+    `${wallet.publicKey.toBase58()},0.000001`).join("\n")}\n`;
   const preview = await api("/v1/payroll-runs/preview", { csvText });
   assert.equal(preview.canCreateRun, true);
-  assert.equal(preview.totalMicro, "2");
+  assert.equal(preview.totalMicro, String(recipients.length));
   assert.equal(preview.budgetCoversValidRows, true);
   const roster = { runId, requester: founder.publicKey.toBase58(),
     items: preview.items.map((item: any) => ({ recipient: item.recipient, amountMicro: item.amountMicro })) };
   const run = await api("/v1/payroll-runs", roster);
   assert.equal((await api("/v1/payroll-runs")).runs.some((entry: { runId: string }) => entry.runId === runId), true);
-  assert.equal(run.items.length, 2);
+  assert.equal(run.items.length, recipients.length);
   assert.deepEqual((await api("/v1/payroll-runs", roster)).items, run.items);
   for (const [index, item] of run.items.entries()) {
     for (let attempt = 0; attempt < 45; attempt++) {
@@ -140,10 +146,21 @@ try {
   }
   const before = await api(`/v1/payroll-runs/${runId}`);
   assert.equal(before.readyToApprove, true);
-  const approved = await api(`/v1/payroll-runs/${runId}/approve`, { actor: founder.publicKey.toBase58() });
-  assert.equal(approved.status, "build");
-  const approval = await send(approved.transaction);
-  await api(`/v1/onboarding/receipts/${approved.receiptId}/confirm`, { signedTransactionBase64: approval.signed });
+  const approvalSignatures: string[] = [];
+  for (let attempt = 0; attempt < recipients.length + 5; attempt++) {
+    const approved = await api(`/v1/payroll-runs/${runId}/approve`, { actor: founder.publicKey.toBase58() });
+    if (approved.status === "ready") break;
+    if (approved.status === "wait") {
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      continue;
+    }
+    assert.equal(approved.status, "build");
+    const approval = await send(approved.transaction);
+    approvalSignatures.push(approval.signature);
+    await api(`/v1/onboarding/receipts/${approved.receiptId}/confirm`, { signedTransactionBase64: approval.signed });
+    if (attempt === recipients.length + 4) throw new Error("Payroll approval chunks did not complete");
+  }
+  assert.ok(approvalSignatures.length > 0);
   for (let i = 0; i < 20; i++) {
     const state = await api(`/v1/payroll-runs/${runId}`);
     if (state.items.every((item: any) => item.requestStatus === "approved")) break;
@@ -200,21 +217,21 @@ try {
       const partial = await api(`/v1/payroll-runs/${runId}`);
       assert.equal(partial.settledCount, 1);
       assert.equal(partial.settledMicro, "1");
-      assert.equal(partial.pendingMicro, "1");
+      assert.equal(partial.pendingMicro, String(recipients.length - 1));
       const replay = await api(`/v1/payment-jobs/${item.paymentId}/prepare`, { actor: founder.publicKey.toBase58() });
       assert.equal(replay.transaction, null);
     }
   }
   const final = await api(`/v1/payroll-runs/${runId}`);
-  assert.equal(final.settledCount, 2);
-  assert.equal(final.settledMicro, "2");
+  assert.equal(final.settledCount, recipients.length);
+  assert.equal(final.settledMicro, String(recipients.length));
   assert.equal(final.retryablePaymentIds.length, 0);
   const history = await api("/v1/payment-jobs?limit=100");
   for (const [index, item] of run.items.entries()) {
     assert.ok(history.payments.some((row: any) => row.record.paymentId === item.paymentId &&
       row.record.state === "settled" && row.payee?.payeeId === payeeIds[index]));
   }
-  process.stdout.write(JSON.stringify({ result: "PASS", runId, approvalSignature: approval.signature,
+  process.stdout.write(JSON.stringify({ result: "PASS", runId, approvalSignatures,
     payoutSignatures: signatures, failedSignature, onboardingSignature, settledCount: final.settledCount,
     requests: run.items.map((item: any) => item.request) }, null, 2) + "\n");
 } finally {
