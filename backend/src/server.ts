@@ -19,6 +19,7 @@ import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, su
 import { checkPayrollReadiness } from "./payroll-readiness.ts";
 import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payroll-approval.ts";
 import { previewPayrollCsv } from "./payroll-roster.ts";
+import { createAuditShare, listAuditShares, openAuditShare, revokeAuditShare, type AuditBundle } from "./compliance-audit.ts";
 import { createPayrollSchedule, getPayrollSchedule, launchScheduledPayroll, listPayrollSchedules,
   payrollScheduleView, updatePayrollSchedule } from "./payroll-schedule.ts";
 import { verifyPayrollScheduleFounder } from "./payroll-schedule-auth.ts";
@@ -39,6 +40,56 @@ const companyAddress = asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_C
 const founderAddress = asAddress(process.env.MERCURY_FOUNDER_ADDRESS, "MERCURY_FOUNDER_ADDRESS");
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? "8787");
+
+function optionalAuditTime(value: unknown, name: string): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== value) {
+    throw new Error(`${name} must be an ISO timestamp`);
+  }
+  return value;
+}
+
+async function buildAuditBundle(body: Record<string, unknown>, token: string): Promise<AuditBundle> {
+  const from = optionalAuditTime(body.from, "from");
+  const to = optionalAuditTime(body.to, "to");
+  if (from && to && Date.parse(from) > Date.parse(to)) throw new Error("Audit period ends before it starts");
+  const available = listPayrollRuns(companyAddress);
+  const selected = body.runIds === undefined
+    ? available.filter((run) => (!from || run.createdAt >= from) && (!to || run.createdAt <= to)).map((run) => run.runId)
+    : (() => {
+      if (!Array.isArray(body.runIds) || body.runIds.length < 1 || body.runIds.length > 100) {
+        throw new Error("runIds must contain 1 to 100 payroll runs");
+      }
+      if (!body.runIds.every((id) => typeof id === "string") || new Set(body.runIds).size !== body.runIds.length) {
+        throw new Error("runIds must be unique UUIDs");
+      }
+      const ids = body.runIds as string[];
+      if (ids.some((id) => !available.some((run) => run.runId === id))) throw new Error("runIds includes an unknown payroll run");
+      if (ids.some((id) => {
+        const run = available.find((item) => item.runId === id)!;
+        return (from !== null && run.createdAt < from) || (to !== null && run.createdAt > to);
+      })) throw new Error("runIds includes a payroll run outside the audit period");
+      return ids;
+    })();
+  if (selected.length === 0) throw new Error("No payroll runs match this audit period");
+  const payrollRuns = [];
+  for (const runId of selected) {
+    const run = getPayrollRun(runId, companyAddress);
+    const items = [];
+    for (const item of run.items) {
+      const request = await readPaymentRequest(companyAddress, item.request, token);
+      let payment = null;
+      try { payment = getPayment(item.paymentId, companyAddress); } catch { /* not executed yet */ }
+      items.push({ paymentId: item.paymentId, request: item.request, recipient: String(request.recipient),
+        amountMicro: String(request.amountMicro), requestStatus: String(request.status),
+        payoutState: payment?.state ?? null, executionSignature: payment?.signature ?? null });
+    }
+    payrollRuns.push({ runId: run.runId, createdAt: run.createdAt, scheduleId: run.scheduleId,
+      rosterRevision: run.rosterRevision, payDate: run.payDate, termsHash: run.termsHash, items });
+  }
+  return { version: 1, company: companyAddress, generatedAt: new Date().toISOString(),
+    period: { from, to }, payrollRuns };
+}
 
 function reply(res: ServerResponse, code: number, body: unknown): void {
   res.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -619,6 +670,50 @@ createServer(async (req, res) => {
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must deactivate a payee");
       const { recipientHash, ...payee } = deactivatePayee(companyAddress, deactivate[1]);
       return reply(res, 200, { payee });
+    }
+    if (req.method === "GET" && req.url === "/v1/compliance/audits") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Only the Founder can view audit links");
+      return reply(res, 200, { audits: listAuditShares(companyAddress) });
+    }
+    if (req.method === "POST" && req.url === "/v1/compliance/audits") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must create auditor access");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      const expiresInDays = body.expiresInDays === undefined ? 30 : body.expiresInDays;
+      if (!Number.isInteger(expiresInDays) || Number(expiresInDays) < 1 || Number(expiresInDays) > 365) {
+        throw new Error("expiresInDays must be an integer from 1 to 365");
+      }
+      const bundle = await buildAuditBundle(body, token);
+      const created = createAuditShare({ company: companyAddress, label: body.label,
+        expiresAt: new Date(Date.now() + Number(expiresInDays) * 86_400_000).toISOString(),
+        period: { from: bundle.period.from, to: bundle.period.to }, bundle });
+      return reply(res, 201, { audit: created.share, auditorAccess: {
+        endpoint: `/v1/compliance/audits/${created.share.auditId}`,
+        token: created.token,
+        authentication: "Authorization: Bearer <auditor token>",
+        note: "The auditor can read this frozen payroll snapshot only. It cannot execute payments or read the live treasury.",
+      } });
+    }
+    const complianceAudit = req.url?.match(/^\/v1\/compliance\/audits\/([^/?]+)(?:\/(revoke))?$/);
+    if (complianceAudit && req.method === "GET" && !complianceAudit[2]) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Auditor token required");
+      return reply(res, 200, openAuditShare(companyAddress, complianceAudit[1], token));
+    }
+    if (complianceAudit && req.method === "POST" && complianceAudit[2] === "revoke") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must revoke auditor access");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Only the Founder can revoke auditor access");
+      return reply(res, 200, { audit: revokeAuditShare(companyAddress, complianceAudit[1]) });
     }
     if (req.url === "/v1/payroll-schedules" && (req.method === "GET" || req.method === "POST")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
