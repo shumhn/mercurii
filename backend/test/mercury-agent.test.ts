@@ -29,7 +29,7 @@ const base = { company, founder, actor: founder, teeToken: "tee", message: "Prep
 test("agent prepares one unsigned registered-payee draft and never claims settlement", async () => {
   let created = 0;
   const result = await runMercuryAgent({ ...base, selectedPayeeId: "vendor-1",
-    selectedRecipient: recipient, paymentId: "payment-1",
+    selectedRecipient: recipient, selectedAmountMicro: 1000000, paymentId: "payment-1",
     fetchImpl: modelReplies({ content: null, tool_calls: [call("prepare_payment_draft",
       { amountMicro: "1000000", purpose: "Invoice" })] },
     { content: "The payment was sent." }),
@@ -52,10 +52,37 @@ test("agent cannot draft without selected payee or remote-model opt-in", async (
     fetchImpl: modelReplies({ content: "hello" }) }), /privacy opt-in/);
 });
 
+test("agent rejects a model amount that differs from the user-selected amount", async () => {
+  await assert.rejects(runMercuryAgent({ ...base, selectedPayeeId: "vendor-1",
+    selectedRecipient: recipient, selectedAmountMicro: 1000000, paymentId: "payment-3",
+    fetchImpl: modelReplies({ content: null, tool_calls: [call("prepare_payment_draft",
+      { amountMicro: "10000000", purpose: "Invoice" })] }),
+  }), /differs from the user-selected amount/);
+});
+
+test("agent never presents an unverified model answer as a company fact", async () => {
+  const ungrounded = await runMercuryAgent({ ...base,
+    fetchImpl: modelReplies({ content: "Your company has 9 million USDC." }) });
+  assert.doesNotMatch(String(ungrounded.answer), /9 million/);
+  assert.deepEqual(ungrounded.actions, []);
+
+  const grounded = await runMercuryAgent({ ...base,
+    message: "What is our current treasury snapshot?",
+    fetchImpl: modelReplies({ content: null, tool_calls: [call("get_treasury_snapshot", {})] },
+      { content: "Your company has 9 million USDC." }),
+    answerQuestion: (async () => ({ answer: "Last synced treasury balance is 1.25 USDC; this is not live.",
+      facts: { balanceMicro: "1250000", updatedSlot: 42 } })) as typeof import("../src/finance-assistant.ts").answerAssistantQuestion,
+  });
+  assert.match(String(grounded.answer), /1\.25 USDC/);
+  assert.doesNotMatch(String(grounded.answer), /9 million/);
+  assert.equal(grounded.agent, "Mercury Finance Agent");
+});
+
 test("agent enforces finance recipient and payment cap before creating draft", async () => {
   let created = false;
   await assert.rejects(runMercuryAgent({ ...base, actor: address(), grant: grantAddress,
-    selectedPayeeId: "vendor-1", selectedRecipient: recipient, paymentId: "payment-2",
+    selectedPayeeId: "vendor-1", selectedRecipient: recipient, selectedAmountMicro: 2000000,
+    paymentId: "payment-2",
     resolveAccess: (async () => ({ actor: "finance", role: "finance" as const, scope: null })) as typeof import("../src/finance-assistant.ts").resolveAssistantAccess,
     fetchImpl: modelReplies({ content: null, tool_calls: [call("prepare_payment_draft",
       { amountMicro: "2000000", purpose: "Invoice" })] }),

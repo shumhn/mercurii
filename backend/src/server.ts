@@ -751,7 +751,8 @@ createServer(async (req, res) => {
       return reply(res, 200, await runMercuryAgent({ company: companyAddress, founder: founderAddress,
         actor, grant: body.grant, teeToken: token, message: body.message,
         requestAddress: body.requestAddress, selectedPayeeId: body.selectedPayeeId,
-        selectedRecipient: body.selectedRecipient, paymentId: body.paymentId,
+        selectedRecipient: body.selectedRecipient, selectedAmountMicro: body.selectedAmountMicro,
+        paymentId: body.paymentId,
         modelUrl: process.env.MERCURY_AGENT_MODEL_URL ?? process.env.MERCURY_LLM_URL ??
           "https://api.fireworks.ai/inference/v1/chat/completions",
         modelName: process.env.MERCURY_AGENT_MODEL ?? process.env.MERCURY_LLM_MODEL ??

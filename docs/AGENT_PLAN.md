@@ -6,7 +6,7 @@ Mercury has one user-facing Finance Agent. Invoice review and payroll readiness 
 
 The agent answers questions from private company state and prepares work for the authenticated user. It resolves the wallet's active grant before each private tool call. The model chooses among role-filtered tools; Mercury code validates every call, executes it, and returns a narrow result. A revoked grant or parent grant stops the next tool call.
 
-Current tools: last private treasury snapshot for Founder or active root Finance; status of an explicitly selected payment request for a member with active, appropriate scope and PER read access; unsigned payment draft for Founder or Finance using a user-selected active registered payee and stable payment ID. A wallet signs a one-use, five-minute challenge before each run. The caller supplies their own TEE access token. The agent endpoint is off by default and requires `MERCURY_ENABLE_FINANCE_ASSISTANT=1`.
+Current tools: last private treasury snapshot for Founder or active root Finance; status of an explicitly selected payment request for a member with active, appropriate scope and PER read access; unsigned payment draft for Founder or Finance using a user-selected active registered payee, exact amount, and stable payment ID. The model's amount must match the selected amount. A wallet signs a one-use, five-minute challenge before each run. The caller supplies their own TEE access token. The agent endpoint is off by default and requires `MERCURY_ENABLE_FINANCE_ASSISTANT=1`.
 
 Next actions, in order:
 
@@ -14,7 +14,7 @@ Next actions, in order:
 2. Add payroll readiness and failed-item explanations. The agent must never choose a salary, approve its own request, or release payroll.
 3. Add a durable conversation and sourced answers from scoped tool results. Do not put the entire company journal into model context.
 
-The assistant's model can classify and summarize. Mercury code and the onchain program decide grant validity, recipient, limits, payment ID, signing requirements, and settlement. `Send this` prepares a transaction; it is not a signature.
+The model chooses a tool, but Mercury code constructs factual answers from the permitted private read. A model-only answer is not presented as a company fact. Mercury code and the onchain program decide grant validity, recipient, limits, payment ID, signing requirements, and settlement. `Send this` prepares a transaction; it is not a signature.
 
 ## 2. Tool Spender (background worker)
 
@@ -30,9 +30,9 @@ Before a public launch, compare invoice extraction accuracy on real examples, Ne
 
 ## Current assistant HTTP surface
 
-`POST /v1/assistant/challenge` takes `{ "actor": "<wallet>" }` and returns a message to sign. `POST /v1/agent/chat` takes `{ "actor", "challengeId", "signature", "message", "grant?", "requestAddress?", "selectedPayeeId?", "selectedRecipient?", "paymentId?" }` with `Authorization: Bearer <caller TEE token>`. A non-Founder supplies `grant`. The three payee/payment fields must all be present to make the draft tool available. The backend verifies the one-use signature and grant, offers only allowed tools to the model, rechecks access for every call, and records a registered-payee draft. The response includes the unsigned terms and `/v1/payment-flows/:paymentId/next`. The older `POST /v1/assistant/query` remains as a read-only classifier endpoint. Neither endpoint signs or submits a transaction.
+`POST /v1/assistant/challenge` takes `{ "actor": "<wallet>" }` and returns a message to sign. `POST /v1/agent/chat` takes `{ "actor", "challengeId", "signature", "message", "grant?", "requestAddress?", "selectedPayeeId?", "selectedRecipient?", "selectedAmountMicro?", "paymentId?" }` with `Authorization: Bearer <caller TEE token>`. A non-Founder supplies `grant`. All four payee/amount/payment fields must be present to make the draft tool available. The backend verifies the one-use signature and grant, offers only allowed tools to the model, rechecks access for every call, and records a registered-payee draft only when the model amount matches the selected amount. The response includes the unsigned terms and `/v1/payment-flows/:paymentId/next`. The older `POST /v1/assistant/query` remains as a read-only classifier endpoint. Neither endpoint signs or submits a transaction.
 
-The server is still local and configured for one company. This is a working backend tool loop, not yet a complete chat product. Model free text is untrusted; after a tool call, the final answer is constructed from verified backend results. For public deployment, add rate limits, durable replay protection across processes, a wallet-to-TEE-token binding check, and encrypted model/tool audit records.
+The server is still local and configured for one company. This is a working backend tool loop, not yet a complete chat product. Model free text is untrusted; final answers are constructed from verified backend results. A user must review the selected payee and amount before requesting a draft. For public deployment, add rate limits, durable replay protection across processes, a wallet-to-TEE-token binding check, and encrypted model/tool audit records.
 
 ## References
 
