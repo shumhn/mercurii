@@ -97,6 +97,8 @@ With `MERCURY_PAYROLL_TEST_SCHEDULE=1`, the payroll script also created a due we
 
 The Founder-signed schedule endpoints were then exercised end to end: schedule `774415f7-6651-48a5-a30c-9115f4224c63` launched run `f4b3b1b5-036c-4ac5-9d74-5a76030125ff`, both private payouts settled, and a signed revision-checked PATCH paused the schedule. Demo schedules with throwaway roster passphrases were paused after proof.
 
+The current payroll proof registered two employees through the Private Payments onboarding flow, checked receipt-based readiness without reading employee balances, then launched scheduled run `8461e24c-2336-4f26-9159-37a1bf77cf67` from schedule `3e3720ec-ca94-482a-85ce-0591515c2ab5`. Its [approval](https://explorer.solana.com/tx/2F9JNZzcwEp8Fh3Bv7hvpoZktCfNVEKYu2rFdT4n3KiBcSzC1jCuWbeCozHXfAHeDywmngXLy3by6NqeRHEqHQmv?cluster=devnet) and two private payouts ([first](https://explorer.solana.com/tx/4YBhZ1EtMDptyN4iu5k1esKFAvfsdtcRa2hpZQstmwEzgTxdbXv5CupdGgqjJf52khMpT5QZwGzCQthoaKbcggv8?cluster=devnet), [second](https://explorer.solana.com/tx/azr8CD9v2jdXxaTGPzHCwb4k5xwGs2iknaPx8xitvFmm4RCJJqwq6GFUBfiu3dxS7brmq8xsS917jWNc7TdWF5Y?cluster=devnet)) settled on devnet.
+
 ```sh
 cargo check -p mercury
 cargo fmt --all -- --check
