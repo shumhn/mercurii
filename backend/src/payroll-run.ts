@@ -122,6 +122,7 @@ export function summarizePayroll(items: PayrollProgressItem[]) {
   let pending = 0n;
   let settledCount = 0;
   let failedCount = 0;
+  let rejectedCount = 0;
   const retryablePaymentIds: string[] = [];
   for (const item of items) {
     const amount = item.amountMicro === null ? 0n : BigInt(item.amountMicro);
@@ -131,11 +132,22 @@ export function summarizePayroll(items: PayrollProgressItem[]) {
       failed += amount;
       failedCount++;
       retryablePaymentIds.push(item.paymentId);
-    } else pending += amount;
+    } else {
+      pending += amount;
+      if (item.requestStatus === "rejected") rejectedCount++;
+    }
   }
+  const state = settledCount === items.length ? "paid"
+    : settledCount > 0 ? "partial"
+    : failedCount > 0 ? "failed"
+    : rejectedCount > 0 ? "rejected"
+    : items.some((item) => item.requestStatus === "submitted") ? "approval_pending"
+    : items.some((item) => item.requestStatus === "approved") ? "paying"
+    : "preparing";
   return { knownTotalMicro: knownTotal.toString(), settledMicro: settled.toString(),
     failedMicro: failed.toString(), pendingMicro: pending.toString(),
-    settledCount, failedCount, pendingCount: items.length - settledCount - failedCount,
+    state, settledCount, failedCount, rejectedCount,
+    pendingCount: items.length - settledCount - failedCount,
     unsubmittedCount: items.filter((item) => item.amountMicro === null).length,
     retryablePaymentIds,
     approvalPendingCount: items.filter((item) => item.requestStatus === "submitted").length,

@@ -74,6 +74,7 @@ test("payroll progress only retries failed approved items and keeps amounts bala
   ];
   const summary = summarizePayroll(items);
   assert.equal(summary.knownTotalMicro, "6000000");
+  assert.equal(summary.state, "partial");
   assert.equal(summary.settledMicro, "1000000");
   assert.equal(summary.failedMicro, "2000000");
   assert.equal(summary.pendingMicro, "3000000");
@@ -83,4 +84,15 @@ test("payroll progress only retries failed approved items and keeps amounts bala
   assert.equal(summary.approvalPendingCount, 0);
   assert.equal(payrollNextAction(items[2]!), "reconcile_or_resend_same_signature");
   assert.equal(payrollNextAction(items[0]!), "complete");
+});
+
+test("payroll state reflects paid, failed, and approval phases", () => {
+  const item = (requestStatus: string, paymentState: string | null = null) =>
+    ({ paymentId: randomUUID(), requestStatus, paymentState, amountMicro: "100" });
+  assert.equal(summarizePayroll([item("empty")]).state, "preparing");
+  assert.equal(summarizePayroll([item("submitted")]).state, "approval_pending");
+  assert.equal(summarizePayroll([item("approved", "submitted")]).state, "paying");
+  assert.equal(summarizePayroll([item("approved", "failed")]).state, "failed");
+  assert.equal(summarizePayroll([item("rejected")]).state, "rejected");
+  assert.equal(summarizePayroll([item("executed", "settled")]).state, "paid");
 });

@@ -196,7 +196,9 @@ export function payrollScheduleView(schedule: PayrollSchedule, now = new Date())
       catch (error) {
         if (!/Unknown payroll run/.test(String(error))) throw error;
       }
-      return { payDate, runId, launched, status: launched ? `/v1/payroll-runs/${runId}` : null };
+      return { payDate, runId, launched,
+        state: launched ? "launched" : payDate < today ? "overdue" : "due",
+        status: launched ? `/v1/payroll-runs/${runId}` : null };
     }),
   };
 }

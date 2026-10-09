@@ -58,6 +58,9 @@ test("scheduled payroll stores only ciphertext and reuses one run ID for a due c
     assert.throws(() => getPayrollSchedule(Keypair.generate().publicKey.toBase58(), scheduleId), /Unknown/);
     const now = new Date("2026-10-09T04:00:00Z");
     assert.equal(payrollScheduleView(schedule, now).dueCycles[0]?.payDate, "2026-10-09");
+    assert.equal(payrollScheduleView(schedule, now).dueCycles[0]?.state, "due");
+    assert.equal(payrollScheduleView(schedule, new Date("2026-10-10T04:00:00Z")).dueCycles[0]?.state,
+      "overdue");
     assert.throws(() => launchScheduledPayroll(company, scheduleId,
       { payDate: "2026-10-16", ...roster }, now), /not a due cycle/);
     const first = launchScheduledPayroll(company, scheduleId, { payDate: "2026-10-09", ...roster }, now);
@@ -67,6 +70,7 @@ test("scheduled payroll stores only ciphertext and reuses one run ID for a due c
     assert.throws(() => launchScheduledPayroll(company, scheduleId, { payDate: "2026-10-09",
       requester, items: [{ recipient, amountMicro: 2_000_000 }] }, now), /different employees or amounts/);
     assert.equal(payrollScheduleView(schedule, now).dueCycles[0]?.launched, true);
+    assert.equal(payrollScheduleView(schedule, now).dueCycles[0]?.state, "launched");
     assert.equal(readFileSync(runFile, "utf8").includes(recipient), false);
     assert.equal(readFileSync(flowFile, "utf8").includes(recipient), false);
     assert.equal(updatePayrollSchedule(company, scheduleId, { paused: true, expectedRevision: 0 }).revision, 1);
