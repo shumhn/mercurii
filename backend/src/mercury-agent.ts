@@ -50,6 +50,7 @@ export async function runMercuryAgent(input: {
   message: unknown; requestAddress?: unknown; selectedPayeeId?: unknown;
   selectedRecipient?: unknown; selectedAmountMicro?: unknown; paymentId?: unknown;
   modelUrl: string; modelName: string; modelApiKey?: string; allowRemoteModel?: boolean;
+  reasoningEffort?: "low" | "high" | "max";
   fetchImpl?: typeof fetch;
   resolveAccess?: typeof resolveAssistantAccess;
   answerQuestion?: typeof answerAssistantQuestion;
@@ -71,6 +72,11 @@ export async function runMercuryAgent(input: {
     throw new Error("Remote model requires an explicit privacy opt-in");
   }
   if (!input.modelName.trim()) throw new Error("Model name required");
+  const isFireworks = endpoint.hostname === "api.fireworks.ai";
+  const reasoningEffort = input.reasoningEffort ?? "low";
+  if (reasoningEffort !== "low" && reasoningEffort !== "high" && reasoningEffort !== "max") {
+    throw new Error("Unsupported agent reasoning effort");
+  }
   const resolveAccess = input.resolveAccess ?? resolveAssistantAccess;
   const currentAccess = () => resolveAccess({ company, founder, actor, grant: input.grant, teeToken: input.teeToken });
   const initialAccess = await currentAccess();
@@ -95,9 +101,10 @@ export async function runMercuryAgent(input: {
     const response = await (input.fetchImpl ?? fetch)(endpoint, {
       method: "POST", headers: { "content-type": "application/json",
         ...(input.modelApiKey ? { authorization: `Bearer ${input.modelApiKey}` } : {}) },
-      body: JSON.stringify({ model: input.modelName, temperature: 0, max_tokens: 512,
+      body: JSON.stringify({ model: input.modelName, temperature: 0, max_tokens: 2048,
+        ...(isFireworks ? { reasoning_effort: reasoningEffort } : {}),
         messages, tools: availableTools, tool_choice: "auto", parallel_tool_calls: false }),
-      signal: AbortSignal.timeout(30_000),
+      signal: AbortSignal.timeout(45_000),
     });
     if (!response.ok) throw new Error(`Agent model failed (${response.status})`);
     const payload = await response.json() as ModelResponse;

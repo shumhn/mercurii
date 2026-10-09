@@ -757,6 +757,7 @@ createServer(async (req, res) => {
           "https://api.fireworks.ai/inference/v1/chat/completions",
         modelName: process.env.MERCURY_AGENT_MODEL ?? process.env.MERCURY_LLM_MODEL ??
           "accounts/fireworks/models/deepseek-v4p1-flash",
+        reasoningEffort: (process.env.MERCURY_AGENT_REASONING_EFFORT ?? "low") as "low" | "high" | "max",
         modelApiKey: process.env.MERCURY_FIREWORKS_API_KEY ?? process.env.MERCURY_LLM_API_KEY,
         allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1" }));
     }

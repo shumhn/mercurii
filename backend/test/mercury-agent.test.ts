@@ -78,6 +78,20 @@ test("agent never presents an unverified model answer as a company fact", async 
   assert.equal(grounded.agent, "Mercury Finance Agent");
 });
 
+test("Fireworks agent uses low thinking while keeping enough output for a tool call", async () => {
+  const result = await runMercuryAgent({ ...base, allowRemoteModel: true,
+    modelUrl: "https://api.fireworks.ai/inference/v1/chat/completions",
+    fetchImpl: (async (_url: URL | RequestInfo, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      assert.equal(body.reasoning_effort, "low");
+      assert.equal(body.max_tokens, 2048);
+      return new Response(JSON.stringify({ choices: [{ message: { content: "The balance is 9 million." } }] }),
+        { status: 200 });
+    }) as typeof fetch,
+  });
+  assert.doesNotMatch(String(result.answer), /9 million/);
+});
+
 test("agent enforces finance recipient and payment cap before creating draft", async () => {
   let created = false;
   await assert.rejects(runMercuryAgent({ ...base, actor: address(), grant: grantAddress,
