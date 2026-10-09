@@ -17,6 +17,7 @@
     "devnet:usdc-agent": "node --experimental-strip-types scripts/devnet-usdc-agent.ts",
     "devnet:onboarding": "node --experimental-strip-types scripts/devnet-onboarding-run.ts",
     "devnet:payroll": "node --experimental-strip-types scripts/devnet-payroll-run.ts",
+    "devnet:team-access": "node --experimental-strip-types scripts/devnet-team-access-proof.ts",
     "reconcile": "node --experimental-strip-types scripts/reconcile-operator.ts",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit"
