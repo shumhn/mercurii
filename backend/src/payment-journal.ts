@@ -7,7 +7,8 @@ import { asAddress } from "./magicblock.ts";
 
 export type PaymentRecord = {
   paymentId: string; company: string; request: string; requester: string; requestId: string;
-  actor: string | null; preparedMessageHash: string | null; signature: string | null;
+  actor: string | null; preparedMessageHash: string | null; preparedBlockhash?: string | null; signature: string | null;
+  failedSignatures?: string[];
   state: "registered" | "prepared" | "submitted" | "failed" | "settled" | "cancelled";
   createdAt: string; updatedAt: string;
 };
@@ -53,6 +54,19 @@ export function listPayments(companyInput: unknown, limit = 50): PaymentRecord[]
   return readJournal().payments.filter((item) => item.company === company).slice(-limit).reverse();
 }
 
+export function paymentReconciliationPage(companyInput: unknown, offset: number, limit = 50): {
+  payments: PaymentRecord[]; nextOffset: number | null; total: number;
+} {
+  const company = asAddress(companyInput, "company");
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new Error("Invalid reconciliation page");
+  }
+  const all = readJournal().payments.filter((item) => item.company === company);
+  const payments = all.slice(offset, offset + limit);
+  const nextOffset = offset + payments.length < all.length ? offset + payments.length : null;
+  return { payments, nextOffset, total: all.length };
+}
+
 export function registerPayment(args: {
   paymentId: unknown; company: string; request: string; requester: string; requestId: string;
 }): PaymentRecord {
@@ -73,7 +87,8 @@ export function registerPayment(args: {
   }
   const now = new Date().toISOString();
   const record: PaymentRecord = { paymentId: id, company, request, requester, requestId: args.requestId,
-    actor: null, preparedMessageHash: null, signature: null, state: "registered", createdAt: now, updatedAt: now };
+    actor: null, preparedMessageHash: null, preparedBlockhash: null, signature: null,
+    state: "registered", createdAt: now, updatedAt: now };
   journal.payments.push(record);
   saveJournal(journal);
   return record;
@@ -89,8 +104,13 @@ export function preparePayment(id: unknown, company: string, actorInput: string,
   const record = journal.payments.find((item) => item.paymentId === paymentId(id) && item.company === company);
   if (!record) throw new Error("Unknown payment ID");
   if (record.state !== "registered" && record.state !== "failed") throw new Error("Payment already has a prepared or submitted execution");
+  if (record.state === "failed" && record.signature) {
+    record.failedSignatures ??= [];
+    if (!record.failedSignatures.includes(record.signature)) record.failedSignatures.push(record.signature);
+  }
   record.actor = asAddress(actorInput, "actor");
   record.preparedMessageHash = preparedMessageHash(transactionBase64);
+  record.preparedBlockhash = Transaction.from(Buffer.from(transactionBase64, "base64")).recentBlockhash ?? null;
   record.signature = null;
   record.state = "prepared";
   record.updatedAt = new Date().toISOString();
@@ -98,7 +118,7 @@ export function preparePayment(id: unknown, company: string, actorInput: string,
   return record;
 }
 
-export function abandonPreparedPayment(id: unknown, company: string, now = Date.now()): PaymentRecord {
+export function abandonPreparedPayment(id: unknown, company: string, blockhashExpired: boolean, now = Date.now()): PaymentRecord {
   const journal = readJournal();
   const record = journal.payments.find((item) => item.paymentId === paymentId(id) && item.company === company);
   if (!record) throw new Error("Unknown payment ID");
@@ -110,8 +130,12 @@ export function abandonPreparedPayment(id: unknown, company: string, now = Date.
   if (now - updatedAt < 60_000) {
     throw new Error("Wait one minute before rebuilding an unsigned payment");
   }
+  if (!record.preparedBlockhash || blockhashExpired !== true) {
+    throw new Error("Prepared transaction blockhash must be proven expired before rebuilding");
+  }
   record.actor = null;
   record.preparedMessageHash = null;
+  record.preparedBlockhash = null;
   record.state = "registered";
   record.updatedAt = new Date(now).toISOString();
   saveJournal(journal);

@@ -6,7 +6,7 @@ import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
 import { inspectMemberGrant } from "./member-onboarding.ts";
-import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild,
+import { confirmOnboardingReceipt, getOnboardingReceipt, latestOnboardingReceipt, listOnboardingReceipts, reconcileOnboardingReceipt, recordOnboardingBuild,
   waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
@@ -14,7 +14,8 @@ import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
-import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
+import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, paymentReconciliationPage, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
+import { paymentRecoveryAction } from "./reconciliation.ts";
 import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
 import { checkPayrollReadiness } from "./payroll-readiness.ts";
 import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payroll-approval.ts";
@@ -336,6 +337,23 @@ createServer(async (req, res) => {
         applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
       }
       return reply(res, 200, receipt);
+    }
+    if (req.method === "POST" && req.url?.startsWith("/v1/onboarding/receipts/") && req.url.endsWith("/reconcile")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const id = req.url.slice("/v1/onboarding/receipts/".length, -"/reconcile".length);
+      const body = await readJson(req);
+      getOnboardingReceipt(id, companyAddress);
+      const receipt = typeof body.signedTransactionBase64 === "string"
+        ? await confirmOnboardingReceipt(id, body.signedTransactionBase64, token)
+        : await reconcileOnboardingReceipt(id, companyAddress, token);
+      if (receipt.status === "confirmed" && /^(cleanupFinanceV2:|cleanupManagerV2:|cleanupMember:)/.test(receipt.operation) &&
+          receipt.target !== companyAddress) {
+        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+      }
+      return reply(res, 200, { receipt, next: receipt.status === "built" ? "provide_original_signed_transaction_or_inspect_target_state"
+        : receipt.status === "pending" ? "wait_and_reconcile_same_signature"
+        : receipt.status === "confirmed" ? "continue_guided_flow" : "inspect_target_before_rebuilding" });
     }
     if (req.method === "POST" && req.url === "/v1/onboarding/recipient/next") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
@@ -1025,6 +1043,63 @@ createServer(async (req, res) => {
       return reply(res, 200, { payments: rows, unavailableCount,
         snapshotUpdatedSlot: snapshot?.updatedSlot ?? null });
     }
+    if (req.method === "POST" && req.url === "/v1/reconciliation/run") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      const body = await readJson(req);
+      const offset = body.paymentOffset === undefined ? 0 : Number(body.paymentOffset);
+      const receiptOffset = body.receiptOffset === undefined ? 0 : Number(body.receiptOffset);
+      const limit = body.limit === undefined ? 20 : Number(body.limit);
+      if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(receiptOffset) || receiptOffset < 0 ||
+          !Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error("Invalid reconciliation page");
+      const page = paymentReconciliationPage(companyAddress, offset, limit);
+      const snapshot = await readTreasurySnapshot(companyAddress, token).catch(() => null);
+      const payments = [];
+      for (const record of page.payments) {
+        try {
+          const request = await readPaymentRequest(companyAddress, record.request, token);
+          const observation = record.signature
+            ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
+          const chainStatus = record.signature && observation === null ? "unavailable" : observation?.status ?? null;
+          const updated = reconcilePayment(record.paymentId, companyAddress, String(request.status), observation?.status ?? null);
+          payments.push({ paymentId: record.paymentId, request: record.request, requestStatus: request.status,
+            paymentState: updated.state, chainStatus, signature: updated.signature,
+            next: paymentRecoveryAction({ record: updated, requestStatus: String(request.status), chainStatus,
+              executionSlot: observation?.slot ?? null, snapshotSlot: snapshot?.updatedSlot ?? null }) });
+        } catch (error) {
+          payments.push({ paymentId: record.paymentId, next: "manual_review",
+            error: error instanceof Error ? error.message : "State unavailable" });
+        }
+      }
+      const receiptJournal = listOnboardingReceipts(companyAddress);
+      const receipts = [];
+      for (const current of receiptJournal.slice(receiptOffset, receiptOffset + limit)) {
+        try {
+          const receipt = await reconcileOnboardingReceipt(current.id, companyAddress, token);
+          if (receipt.status === "confirmed" && /^(cleanupFinanceV2:|cleanupManagerV2:|cleanupMember:)/.test(receipt.operation) &&
+              receipt.target !== companyAddress) {
+            applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+          }
+          receipts.push({ id: receipt.id, operation: receipt.operation, status: receipt.status,
+            signature: receipt.signature, next: receipt.status === "built"
+              ? "provide_original_signed_transaction_or_inspect_target_state"
+              : receipt.status === "pending" ? "wait_and_reconcile_same_signature"
+              : receipt.status === "confirmed" ? "continue_guided_flow" : "inspect_target_before_rebuilding" });
+        } catch (error) {
+          receipts.push({ id: current.id, operation: current.operation, status: current.status,
+            next: "manual_review", error: error instanceof Error ? error.message : "State unavailable" });
+        }
+      }
+      return reply(res, 200, { companyAddress, payments, receipts,
+        nextPaymentOffset: page.nextOffset,
+        nextReceiptOffset: receiptOffset + receipts.length < receiptJournal.length ? receiptOffset + receipts.length : null,
+        totalPayments: page.total,
+        unresolvedReceiptsAtStart: receiptJournal.filter((item) => item.status === "built" || item.status === "pending").length,
+        snapshotUpdatedSlot: snapshot?.updatedSlot ?? null,
+        note: "This sweep only observes and updates receipts. Any new transfer or snapshot sync still needs an authorized wallet signature." });
+    }
     const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync|rebuild))?$/);
     if (paymentJob && req.method === "GET" && !paymentJob[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -1110,7 +1185,12 @@ createServer(async (req, res) => {
       const record = getPayment(id, companyAddress);
       const request = await readPaymentRequest(companyAddress, record.request, token);
       if (request.status !== "approved") throw new Error("Payment must still be approved before rebuilding");
-      return reply(res, 200, { record: abandonPreparedPayment(id, companyAddress),
+      if (!record.preparedBlockhash) throw new Error("Prepared blockhash is unavailable; inspect this payment manually");
+      const endpoint = new URL(TEE_RPC);
+      endpoint.searchParams.set("token", token);
+      const valid = (await new Connection(endpoint.toString(), "confirmed")
+        .isBlockhashValid(record.preparedBlockhash, { commitment: "confirmed" })).value;
+      return reply(res, 200, { record: abandonPreparedPayment(id, companyAddress, valid === false),
         next: `/v1/payment-jobs/${id}/prepare` });
     }
     if (paymentJob && req.method === "POST" && paymentJob[2] === "submit") {

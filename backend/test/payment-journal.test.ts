@@ -81,7 +81,9 @@ test("failed chain signature can prepare a replacement only after reconciliation
     bindSignedPayment(id, company, tx.serialize().toString("base64"));
     assert.throws(() => preparePayment(id, company, company, tx.serialize().toString("base64")), /already has/);
     assert.equal(reconcilePayment(id, company, "approved", "failed").state, "failed");
+    const failedSignature = getPayment(id, company).signature;
     assert.equal(preparePayment(id, company, company, tx.serialize().toString("base64")).state, "prepared");
+    assert.deepEqual(getPayment(id, company).failedSignatures, [failedSignature]);
   } finally {
     if (previous === undefined) delete process.env.MERCURY_PAYMENT_JOURNAL;
     else process.env.MERCURY_PAYMENT_JOURNAL = previous;
@@ -106,12 +108,13 @@ test("an unsigned payout can be rebuilt after a restart without resetting submit
     tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
     const unsigned = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
     const prepared = preparePayment(id, company, company, unsigned);
-    assert.throws(() => abandonPreparedPayment(id, company, Date.parse(prepared.updatedAt) + 59_999), /Wait one minute/);
-    assert.equal(abandonPreparedPayment(id, company, Date.parse(prepared.updatedAt) + 60_000).state, "registered");
+    assert.throws(() => abandonPreparedPayment(id, company, true, Date.parse(prepared.updatedAt) + 59_999), /Wait one minute/);
+    assert.throws(() => abandonPreparedPayment(id, company, false, Date.parse(prepared.updatedAt) + 60_000), /proven expired/);
+    assert.equal(abandonPreparedPayment(id, company, true, Date.parse(prepared.updatedAt) + 60_000).state, "registered");
     assert.equal(preparePayment(id, company, company, unsigned).state, "prepared");
     tx.sign(actor);
     bindSignedPayment(id, company, tx.serialize().toString("base64"));
-    assert.throws(() => abandonPreparedPayment(id, company, Date.now() + 120_000), /Only an unsigned/);
+    assert.throws(() => abandonPreparedPayment(id, company, true, Date.now() + 120_000), /Only an unsigned/);
   } finally {
     if (previous === undefined) delete process.env.MERCURY_PAYMENT_JOURNAL;
     else process.env.MERCURY_PAYMENT_JOURNAL = previous;
