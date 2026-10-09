@@ -3,6 +3,8 @@ import { timingSafeEqual } from "node:crypto";
 import { BN } from "@coral-xyz/anchor";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
+import { createAssistantChallenge, consumeAssistantChallenge } from "./assistant-auth.ts";
+import { answerAssistantQuestion, classifyAssistantQuestion, resolveAssistantAccess } from "./finance-assistant.ts";
 import { reserveInvoiceFlow } from "./invoice-journal.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
@@ -716,6 +718,27 @@ createServer(async (req, res) => {
         actor: founderAddress, grant: grantAddress,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
       return reply(res, 200, { status: "unsigned", grant: grantAddress, transaction });
+    }
+    if (req.method === "POST" && req.url === "/v1/assistant/challenge") {
+      if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Finance assistant is disabled" });
+      const body = await readJson(req);
+      return reply(res, 200, createAssistantChallenge(companyAddress, body.actor));
+    }
+    if (req.method === "POST" && req.url === "/v1/assistant/query") {
+      if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Finance assistant is disabled" });
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const actor = consumeAssistantChallenge({ company: companyAddress, actor: body.actor,
+        challengeId: body.challengeId, signature: body.signature });
+      const access = await resolveAssistantAccess({ company: companyAddress, founder: founderAddress,
+        actor, grant: body.grant, teeToken: token });
+      const intent = await classifyAssistantQuestion({ question: body.question,
+        modelUrl: process.env.MERCURY_LLM_URL ?? "", modelName: process.env.MERCURY_LLM_MODEL ?? "",
+        modelApiKey: process.env.MERCURY_LLM_API_KEY,
+        allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1" });
+      return reply(res, 200, await answerAssistantQuestion({ company: companyAddress, access, teeToken: token,
+        intent, requestAddress: body.requestAddress }));
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });
