@@ -731,6 +731,7 @@ createServer(async (req, res) => {
           const privateRequest = inspected.observation.privateReady && requestStatus !== "empty"
             ? await readPaymentRequest(companyAddress, item.request, token) : null;
           const amountMicro = privateRequest ? String(privateRequest.amountMicro) : null;
+          const recipient = privateRequest ? String(privateRequest.recipient) : null;
           let payment = null;
           if (["approved", "executed", "rejected"].includes(requestStatus)) {
             const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
@@ -738,7 +739,7 @@ createServer(async (req, res) => {
             const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
             payment = reconcilePayment(item.paymentId, companyAddress, requestStatus, chain?.status ?? null);
           }
-          return { paymentId: item.paymentId, request: item.request, requestStatus, amountMicro,
+          return { paymentId: item.paymentId, request: item.request, requestStatus, recipient, amountMicro,
             next: `/v1/payment-flows/${item.paymentId}/next`,
             paymentJob: `/v1/payment-jobs/${item.paymentId}`, paymentState: payment?.state ?? null,
             signature: payment?.signature ?? null,
