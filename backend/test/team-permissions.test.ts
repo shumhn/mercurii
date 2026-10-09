@@ -76,3 +76,18 @@ test("request reader reset can omit a revoked requester and require a Viewer gra
     manager: anchor.web3.PublicKey.default, viewer: anchor.web3.PublicKey.default,
   })));
 });
+
+test("AgentPolicy reader cleanup is Founder-signed and targets the private policy permission", async () => {
+  const agentPolicy = Keypair.generate().publicKey;
+  const permission = Keypair.generate().publicKey;
+  const instruction = await program.methods.removeFinanceAgentReader().accountsPartial({
+    founder: actor, policy: company, agentPolicy, permission,
+    ephemeralVault: Keypair.generate().publicKey,
+    magicProgram: Keypair.generate().publicKey,
+    permissionProgram: Keypair.generate().publicKey,
+  }).instruction();
+  assert.ok(instruction.keys[0]!.pubkey.equals(actor));
+  assert.equal(instruction.keys[0]!.isSigner, true);
+  assert.ok(instruction.keys.some((key) => key.pubkey.equals(agentPolicy) && key.isWritable));
+  assert.ok(instruction.keys.some((key) => key.pubkey.equals(permission) && key.isWritable));
+});

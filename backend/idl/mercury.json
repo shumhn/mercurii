@@ -4828,6 +4828,183 @@
       "args": []
     },
     {
+      "name": "remove_finance_agent_reader",
+      "docs": [
+        "Remove the Finance reader after its grant is revoked. A previously",
+        "revoked Agent must not regain read access through this cleanup."
+      ],
+      "discriminator": [
+        122,
+        169,
+        38,
+        103,
+        24,
+        230,
+        28,
+        252
+      ],
+      "accounts": [
+        {
+          "name": "founder",
+          "signer": true,
+          "relations": [
+            "policy",
+            "agent_policy"
+          ]
+        },
+        {
+          "name": "policy",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  109,
+                  112,
+                  97,
+                  110,
+                  121,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "policy.founder",
+                "account": "CompanyPolicy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "agent_policy",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  97,
+                  103,
+                  101,
+                  110,
+                  116,
+                  45,
+                  112,
+                  111,
+                  108,
+                  105,
+                  99,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent_policy.founder",
+                "account": "AgentPolicy"
+              },
+              {
+                "kind": "account",
+                "path": "agent_policy.company",
+                "account": "AgentPolicy"
+              },
+              {
+                "kind": "account",
+                "path": "agent_policy.agent",
+                "account": "AgentPolicy"
+              }
+            ]
+          }
+        },
+        {
+          "name": "permission",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  101,
+                  114,
+                  109,
+                  105,
+                  115,
+                  115,
+                  105,
+                  111,
+                  110,
+                  58
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "agent_policy"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                136,
+                161,
+                10,
+                196,
+                33,
+                152,
+                1,
+                214,
+                246,
+                106,
+                29,
+                60,
+                6,
+                152,
+                192,
+                102,
+                169,
+                175,
+                212,
+                217,
+                180,
+                252,
+                231,
+                71,
+                151,
+                141,
+                209,
+                5,
+                168,
+                212,
+                103,
+                82
+              ]
+            }
+          }
+        },
+        {
+          "name": "permission_program",
+          "address": "ACLseoPoyC3cBqoUtkbjZ4aDrkurZW86v19pXz2XQnp1"
+        },
+        {
+          "name": "ephemeral_vault",
+          "writable": true,
+          "address": "MagicVau1t999999999999999999999999999999999"
+        },
+        {
+          "name": "magic_program",
+          "address": "Magic11111111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "restore_policy_readers",
       "docs": [
         "Founder repairs or refreshes the company policy ACL from one active",

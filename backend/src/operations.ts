@@ -240,7 +240,7 @@ function aclAccounts(account: PublicKey): Record<string, PublicKey> {
 const privateOperations = new Set([
   "initCompanyPermission", "activateCompanyPrivacy", "configureLimits",
   "initRequestPermission", "activateRequestPrivacy", "submitPayment", "approvePayment", "rejectPayment", "executePayment",
-  "initAgentPermission", "activateAgentPrivacy", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
+  "initAgentPermission", "activateAgentPrivacy", "removeFinanceAgentReader", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
   "initSnapshotPermission", "activateSnapshotPrivacy", "syncTreasurySnapshot",
   "setSnapshotReaders", "setRequestReaders", "setRequestReadersV2",
   "initGrantPermission", "activateRootGrantPrivacy", "activateMemberGrantPrivacy", "activateChildGrantPrivacy", "restorePolicyReaders", "configureGrant", "revokeGrant",
@@ -413,6 +413,13 @@ export async function buildOperation(input: BuildInput, config: {
         authority: actor, policy: company, grant, parent,
         ...aclAccounts(grant), parentPermission: parent.equals(PROGRAM_ID) ? PROGRAM_ID : permissionPdaFromAccount(parent),
         policyPermission: permissionPdaFromAccount(company),
+      }).transaction();
+      break;
+    }
+    case "removeFinanceAgentReader": {
+      const agentPolicy = pub(input.agentPolicy, "agentPolicy");
+      tx = await program.methods.removeFinanceAgentReader().accountsPartial({
+        founder: actor, policy: company, agentPolicy, ...aclAccounts(agentPolicy),
       }).transaction();
       break;
     }

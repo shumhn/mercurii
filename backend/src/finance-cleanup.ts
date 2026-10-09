@@ -17,7 +17,7 @@ const SNAPSHOT = discriminator("TreasurySnapshot");
 const AGENT = discriminator("AgentPolicy");
 const POLICY = discriminator("CompanyPolicy");
 
-export type CleanupTarget = { address: string; kind: "request" | "snapshot" };
+export type CleanupTarget = { address: string; kind: "request" | "snapshot" | "agent" };
 export type FinanceCleanupScan = {
   company: string; finance: string; grant: string;
   targets: CleanupTarget[];
@@ -86,7 +86,10 @@ export async function scanFinanceReaderCleanup(args: {
       }
     } else if (bytes.equals(AGENT)) {
       const agent = coder.decode("AgentPolicy", account.data) as { company: PublicKey; private_ready: boolean };
-      if (agent.company.toBase58() === company && agent.private_ready) agentPolicies.push(pubkey.toBase58());
+      if (agent.company.toBase58() === company && agent.private_ready) {
+        agentPolicies.push(pubkey.toBase58());
+        targets.push({ address: pubkey.toBase58(), kind: "agent" });
+      }
     }
   }
   if (!policySeen) throw new Error("PER account scan did not include the company policy; cleanup would be incomplete");

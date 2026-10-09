@@ -13,6 +13,7 @@ import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
+import { listTeamMembers } from "./team-directory.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, paymentReconciliationPage, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import { paymentRecoveryAction } from "./reconciliation.ts";
@@ -319,6 +320,55 @@ createServer(async (req, res) => {
         transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
+    if (req.method === "GET" && req.url === "/v1/team-members") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      return reply(res, 200, { members: await listTeamMembers(companyAddress, token) });
+    }
+    const revokeGrantRoute = req.url?.match(/^\/v1\/team-grants\/([^/?]+)\/revoke\/next$/);
+    if (req.method === "POST" && revokeGrantRoute) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must revoke team access");
+      const grantAddress = asAddress(decodeURIComponent(revokeGrantRoute[1]!), "grant");
+      const [grant, policy] = await Promise.all([
+        readTeamGrant(companyAddress, grantAddress, token), readCompanyPolicy(companyAddress, token),
+      ]);
+      const root = grant.parent === PublicKey.default.toBase58();
+      const validRoot = [1, 3, 4].includes(Number(grant.role)) && root &&
+        grant.grantor === founderAddress &&
+        (grant.role !== 1 || grant.member === policy.finance);
+      const validManager = grant.role === 2 && !root && grant.grantor === policy.finance;
+      if (!validRoot && !validManager) throw new Error("Unsupported grant hierarchy");
+      const cleanup = grant.role === 1 ? "/v1/access/finance-revocation-cleanup/plan" :
+        grant.role === 2 ? "/v1/access/manager-revocation-cleanup/plan" :
+        "/v1/access/member-revocation-cleanup/plan";
+      const cleanupBody = grant.role === 2
+        ? { actor: founderAddress, grant: grantAddress, parentGrant: grant.parent }
+        : { actor: founderAddress, grant: grantAddress };
+      if (grant.revoked === true && grant.active === false) {
+        return reply(res, 200, { status: "cleanup_required", grant: grantAddress,
+          cleanup: { endpoint: cleanup, body: cleanupBody } });
+      }
+      if (grant.active !== true || grant.revoked !== false) throw new Error("Grant is not active");
+      const prior = latestOnboardingReceipt(companyAddress, grantAddress, "revokeGrant");
+      if (prior?.status === "confirmed") {
+        throw new Error("Confirmed revoke receipt disagrees with the private grant; inspect before retrying");
+      }
+      if (prior && (prior.status === "pending" || waitForCleanupReceipt(prior))) {
+        return reply(res, 200, { status: "wait_for_receipt", grant: grantAddress,
+          receiptId: prior.id, cleanup: { endpoint: cleanup, body: cleanupBody } });
+      }
+      const transaction = await buildOperation({ operation: "revokeGrant", actor: founderAddress,
+        grant: grantAddress, parentGrant: grant.role === 2 ? grant.parent : null,
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = recordOnboardingBuild({ company: companyAddress, target: grantAddress,
+        operation: "revokeGrant", chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { status: "sign_revoke", grant: grantAddress,
+        receiptId: receipt.id, transaction, cleanup: { endpoint: cleanup, body: cleanupBody } });
+    }
     if (req.method === "POST" && req.url?.startsWith("/v1/onboarding/receipts/") && req.url.endsWith("/confirm")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -456,9 +506,10 @@ createServer(async (req, res) => {
         }
         if (pending.length >= 10) break;
         const transaction = await buildOperation({
-          operation: target.kind === "request" ? "setRequestReadersV2" : "setSnapshotReaders",
+          operation: target.kind === "request" ? "setRequestReadersV2" :
+            target.kind === "snapshot" ? "setSnapshotReaders" : "removeFinanceAgentReader",
           actor: founderAddress, request: target.address, includeRequester: false,
-          includeFinance: false, manager: null, viewer: null,
+          includeFinance: false, manager: null, viewer: null, agentPolicy: target.address,
         }, { company: companyAddress, founder: founderAddress, teeToken: token });
         const receipt = recordOnboardingBuild({
           company: companyAddress, target: target.address, operation: operationKey,
@@ -469,11 +520,12 @@ createServer(async (req, res) => {
       const confirmedCount = scan.targets.filter((target) =>
         latestOnboardingReceipt(companyAddress, target.address, operationKey)?.status === "confirmed").length;
       return reply(res, 200, {
-        status: confirmedCount === scan.targets.length && scan.agentPolicies.length === 0 ? "ready" : "cleanup_required",
+        status: confirmedCount === scan.targets.length ? "ready" : "cleanup_required",
         grant: scan.grant, totalTargets: scan.targets.length, confirmedCount, pending,
         residualReadAccess: {
           financeOwnedRequests: scan.financeOwnedRequests,
-          agentPolicies: scan.agentPolicies,
+          agentPolicies: scan.agentPolicies.filter((address) =>
+            latestOnboardingReceipt(companyAddress, address, operationKey)?.status !== "confirmed"),
           historicalResetRequests: scan.historicalResetRequests,
         },
       });

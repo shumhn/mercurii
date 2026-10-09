@@ -2050,6 +2050,56 @@ pub mod mercury {
         Ok(())
     }
 
+    /// Remove the Finance reader after its grant is revoked. A previously
+    /// revoked Agent must not regain read access through this cleanup.
+    pub fn remove_finance_agent_reader(ctx: Context<ActivateAgentPrivacy>) -> Result<()> {
+        require!(
+            ctx.accounts.agent_policy.private_ready,
+            MercuryError::PrivacyNotActive
+        );
+        require_keys_eq!(
+            ctx.accounts.agent_policy.company,
+            ctx.accounts.policy.key(),
+            MercuryError::WrongCompany
+        );
+        let policy = &ctx.accounts.agent_policy;
+        let bump = [ctx.bumps.agent_policy];
+        let seeds: &[&[u8]] = &[
+            AGENT_SEED,
+            policy.founder.as_ref(),
+            policy.company.as_ref(),
+            policy.agent.as_ref(),
+            &bump,
+        ];
+        let flags = TX_LOGS_FLAG | TX_MESSAGE_FLAG | TX_BALANCES_FLAG;
+        let mut members = vec![Member {
+            flags,
+            pubkey: ctx.accounts.policy.founder,
+        }];
+        if !policy.revoked {
+            members.push(Member {
+                flags,
+                pubkey: policy.agent,
+            });
+        }
+        UpdateEphemeralPermissionCpi {
+            payer: policy.to_account_info(),
+            permissioned_account: policy.to_account_info(),
+            permission: ctx.accounts.permission.to_account_info(),
+            vault: ctx.accounts.ephemeral_vault.to_account_info(),
+            magic_program: ctx.accounts.magic_program.to_account_info(),
+            permission_program: ctx.accounts.permission_program.to_account_info(),
+            authority: policy.to_account_info(),
+            authority_is_signer: false,
+            args: EphemeralMembersArgs {
+                is_private: true,
+                members,
+            },
+        }
+        .invoke_signed(&[&seeds])?;
+        Ok(())
+    }
+
     /// Founder chooses one allowed recipient and two hard caps for this agent.
     pub fn configure_agent(
         ctx: Context<ConfigureAgent>,
