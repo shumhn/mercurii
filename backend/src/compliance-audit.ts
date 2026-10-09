@@ -23,11 +23,20 @@ export type AuditShare = {
   period: { from: string | null; to: string | null };
 };
 
+export type AuditEvent = {
+  eventId: string;
+  company: string;
+  auditId: string;
+  action: "created" | "opened" | "revoked";
+  actor: string;
+  at: string;
+};
+
 type StoredAuditShare = AuditShare & {
   tokenHash: string;
   envelope: { salt: string; iv: string; tag: string; ciphertext: string };
 };
-type Journal = { version: 1; audits: StoredAuditShare[] };
+type Journal = { version: 1; audits: StoredAuditShare[]; events: AuditEvent[] };
 
 const DEFAULT_PATH = new URL("../.state/compliance-audits.json", import.meta.url).pathname;
 const path = () => process.env.MERCURY_COMPLIANCE_AUDIT_JOURNAL ?? DEFAULT_PATH;
@@ -50,10 +59,12 @@ function auditId(value: unknown): string {
 function readJournal(): Journal {
   try {
     const value = JSON.parse(readFileSync(path(), "utf8")) as Journal;
-    if (value.version !== 1 || !Array.isArray(value.audits)) throw new Error("Invalid compliance audit journal");
-    return value;
+    if (value.version !== 1 || !Array.isArray(value.audits) || (value.events !== undefined && !Array.isArray(value.events))) {
+      throw new Error("Invalid compliance audit journal");
+    }
+    return { ...value, events: value.events ?? [] };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, audits: [] };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, audits: [], events: [] };
     throw error;
   }
 }
@@ -98,7 +109,7 @@ function publicShare(record: StoredAuditShare): AuditShare {
 
 export function createAuditShare(input: {
   company: string; label?: unknown; expiresAt: unknown;
-  period?: { from?: unknown; to?: unknown }; bundle: AuditBundle;
+  period?: { from?: unknown; to?: unknown }; actor: string; bundle: AuditBundle;
 }): { share: AuditShare; token: string } {
   const company = asAddress(input.company, "company");
   const expiresAt = validIso(input.expiresAt, "expiresAt")!;
@@ -121,6 +132,8 @@ export function createAuditShare(input: {
   };
   const journal = readJournal();
   journal.audits.push(record);
+  journal.events.push({ eventId: randomUUID(), company, auditId: record.auditId,
+    action: "created", actor: asAddress(input.actor, "actor"), at: now });
   saveJournal(journal);
   return { share: publicShare(record), token };
 }
@@ -131,7 +144,14 @@ export function listAuditShares(companyInput: unknown): AuditShare[] {
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt)).map(publicShare);
 }
 
-export function revokeAuditShare(companyInput: unknown, idInput: unknown, now = new Date()): AuditShare {
+export function listAuditEvents(companyInput: unknown, idInput?: unknown): AuditEvent[] {
+  const company = asAddress(companyInput, "company");
+  const audit = idInput === undefined ? null : auditId(idInput);
+  return readJournal().events.filter((event) => event.company === company && (audit === null || event.auditId === audit))
+    .sort((left, right) => right.at.localeCompare(left.at));
+}
+
+export function revokeAuditShare(companyInput: unknown, idInput: unknown, actorInput: unknown, now = new Date()): AuditShare {
   const company = asAddress(companyInput, "company");
   const id = auditId(idInput);
   const journal = readJournal();
@@ -139,6 +159,8 @@ export function revokeAuditShare(companyInput: unknown, idInput: unknown, now = 
   if (!share) throw new Error("Unknown audit link");
   if (share.revokedAt === null) {
     share.revokedAt = now.toISOString();
+    journal.events.push({ eventId: randomUUID(), company, auditId: id, action: "revoked",
+      actor: asAddress(actorInput, "actor"), at: share.revokedAt });
     saveJournal(journal);
   }
   return publicShare(share);
@@ -161,6 +183,8 @@ export function openAuditShare(companyInput: unknown, idInput: unknown, token: u
   if (bundle.version !== 1 || bundle.company !== company) throw new Error("Audit bundle is invalid");
   share.accessCount += 1;
   share.lastAccessedAt = now.toISOString();
+  journal.events.push({ eventId: randomUUID(), company, auditId: id, action: "opened",
+    actor: "auditor-capability", at: share.lastAccessedAt });
   saveJournal(journal);
   return { share: publicShare(share), bundle };
 }

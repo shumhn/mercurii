@@ -19,7 +19,7 @@ import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, su
 import { checkPayrollReadiness } from "./payroll-readiness.ts";
 import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payroll-approval.ts";
 import { previewPayrollCsv } from "./payroll-roster.ts";
-import { createAuditShare, listAuditShares, openAuditShare, revokeAuditShare, type AuditBundle } from "./compliance-audit.ts";
+import { createAuditShare, listAuditEvents, listAuditShares, openAuditShare, revokeAuditShare, type AuditBundle } from "./compliance-audit.ts";
 import { createPayrollSchedule, getPayrollSchedule, launchScheduledPayroll, listPayrollSchedules,
   payrollScheduleView, updatePayrollSchedule } from "./payroll-schedule.ts";
 import { verifyPayrollScheduleFounder } from "./payroll-schedule-auth.ts";
@@ -682,7 +682,8 @@ createServer(async (req, res) => {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
-      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must create auditor access");
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== founderAddress) throw new Error("Founder must create auditor access");
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
       const expiresInDays = body.expiresInDays === undefined ? 30 : body.expiresInDays;
@@ -692,13 +693,22 @@ createServer(async (req, res) => {
       const bundle = await buildAuditBundle(body, token);
       const created = createAuditShare({ company: companyAddress, label: body.label,
         expiresAt: new Date(Date.now() + Number(expiresInDays) * 86_400_000).toISOString(),
-        period: { from: bundle.period.from, to: bundle.period.to }, bundle });
+        period: { from: bundle.period.from, to: bundle.period.to }, actor, bundle });
       return reply(res, 201, { audit: created.share, auditorAccess: {
         endpoint: `/v1/compliance/audits/${created.share.auditId}`,
         token: created.token,
         authentication: "Authorization: Bearer <auditor token>",
         note: "The auditor can read this frozen payroll snapshot only. It cannot execute payments or read the live treasury.",
       } });
+    }
+    if (req.method === "GET" && req.url?.startsWith("/v1/compliance/audit-events")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Only the Founder can view audit activity");
+      const url = new URL(req.url, "http://mercury.local");
+      const auditId = url.searchParams.get("auditId") ?? undefined;
+      return reply(res, 200, { events: listAuditEvents(companyAddress, auditId) });
     }
     const complianceAudit = req.url?.match(/^\/v1\/compliance\/audits\/([^/?]+)(?:\/(revoke))?$/);
     if (complianceAudit && req.method === "GET" && !complianceAudit[2]) {
@@ -710,10 +720,11 @@ createServer(async (req, res) => {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
-      if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must revoke auditor access");
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== founderAddress) throw new Error("Founder must revoke auditor access");
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress) throw new Error("Only the Founder can revoke auditor access");
-      return reply(res, 200, { audit: revokeAuditShare(companyAddress, complianceAudit[1]) });
+      return reply(res, 200, { audit: revokeAuditShare(companyAddress, complianceAudit[1], actor) });
     }
     if (req.url === "/v1/payroll-schedules" && (req.method === "GET" || req.method === "POST")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
