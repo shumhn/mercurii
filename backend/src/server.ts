@@ -108,6 +108,55 @@ function matchesAgentApiKey(header: string | undefined): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
+async function nextTeamReaderCleanup(grant: string, role: number, parentGrant: string,
+  token: string): Promise<Record<string, unknown>> {
+  let targets: Array<{ address: string; kind: "request" | "snapshot" | "agent" }>;
+  let operationKey: string;
+  if (role === 1) {
+    const scan = await scanFinanceReaderCleanup({ company: companyAddress, founder: founderAddress,
+      grant, teeToken: token });
+    targets = scan.targets;
+    operationKey = `cleanupFinanceV2:${grant}`;
+  } else if (role === 2) {
+    const scan = await scanManagerReaderCleanup({ company: companyAddress, founder: founderAddress,
+      grant, parentGrant, teeToken: token });
+    targets = scan.targets.map((target) => ({ ...target, kind: "request" as const }));
+    operationKey = `cleanupManagerV2:${grant}`;
+  } else {
+    const scan = await scanMemberReaderCleanup({ company: companyAddress, founder: founderAddress,
+      grant, teeToken: token });
+    targets = scan.targets.map((address) => ({ address, kind: "request" as const }));
+    operationKey = `cleanupMember:${grant}`;
+  }
+  let confirmedCount = 0;
+  for (const target of targets) {
+    const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
+    if (prior?.status === "confirmed") {
+      if (target.kind === "request") applyConfirmedReaderCleanup(companyAddress, target.address, "all");
+      confirmedCount++;
+      continue;
+    }
+    const progress = { grant, totalTargets: targets.length, confirmedCount, target: target.address,
+      targetKind: target.kind };
+    if (prior && (prior.status === "pending" || waitForCleanupReceipt(prior))) {
+      return { status: "wait_for_cleanup_receipt", ...progress, receiptId: prior.id,
+        receiptStatus: prior.status, reconcile: `/v1/onboarding/receipts/${prior.id}/reconcile` };
+    }
+    const operation = target.kind === "request" ? "setRequestReadersV2" :
+      target.kind === "snapshot" ? "setSnapshotReaders" : "removeFinanceAgentReader";
+    const transaction = await buildOperation({ operation, actor: founderAddress,
+      request: target.address, agentPolicy: target.address, includeRequester: false,
+      includeFinance: false, manager: null, viewer: null,
+    }, { company: companyAddress, founder: founderAddress, teeToken: token });
+    const receipt = recordOnboardingBuild({ company: companyAddress, target: target.address,
+      operation: operationKey, chain: transaction.sendTo,
+      transactionBase64: transaction.transactionBase64 });
+    return { status: "sign_cleanup", ...progress, receiptId: receipt.id, transaction };
+  }
+  return { status: "ready", grant, totalTargets: targets.length, confirmedCount,
+    note: "All discovered private readers were reset; verify revoked-wallet read denial." };
+}
+
 async function readJson(req: IncomingMessage, maxBytes = 16_384): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   let size = 0;
@@ -349,8 +398,8 @@ createServer(async (req, res) => {
         ? { actor: founderAddress, grant: grantAddress, parentGrant: grant.parent }
         : { actor: founderAddress, grant: grantAddress };
       if (grant.revoked === true && grant.active === false) {
-        return reply(res, 200, { status: "cleanup_required", grant: grantAddress,
-          cleanup: { endpoint: cleanup, body: cleanupBody } });
+        return reply(res, 200, await nextTeamReaderCleanup(grantAddress, Number(grant.role),
+          String(grant.parent), token));
       }
       if (grant.active !== true || grant.revoked !== false) throw new Error("Grant is not active");
       const prior = latestOnboardingReceipt(companyAddress, grantAddress, "revokeGrant");
@@ -368,7 +417,8 @@ createServer(async (req, res) => {
         operation: "revokeGrant", chain: transaction.sendTo,
         transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { status: "sign_revoke", grant: grantAddress,
-        receiptId: receipt.id, transaction, cleanup: { endpoint: cleanup, body: cleanupBody } });
+        receiptId: receipt.id, transaction, next: `/v1/team-grants/${grantAddress}/revoke/next`,
+        cleanup: { endpoint: cleanup, body: cleanupBody } });
     }
     if (req.method === "POST" && req.url?.startsWith("/v1/onboarding/receipts/") && req.url.endsWith("/confirm")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];

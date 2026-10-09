@@ -223,26 +223,23 @@ async function signHttpStep(step: { transaction?: unknown; receiptId?: unknown }
   return signature;
 }
 
-async function revokeAndClean(grant: string, endpoint: string, body: Record<string, unknown>): Promise<number> {
+async function revokeAndClean(grant: string): Promise<number> {
   const route = `/v1/team-grants/${grant}/revoke/next`;
   const next = await api(route, { actor: founder.publicKey.toBase58() });
   assert.equal(next.status, "sign_revoke");
   await signHttpStep(next);
-  const after = await api(route, { actor: founder.publicKey.toBase58() });
-  assert.equal(after.status, "cleanup_required");
-  assert.equal((after.cleanup as { endpoint: string }).endpoint, endpoint);
   let total = 0;
   for (let attempt = 0; attempt < 30; attempt++) {
-    const plan = await api(endpoint, body);
+    const plan = await api(route, { actor: founder.publicKey.toBase58() });
     if (plan.status === "ready") return total;
-    const pending = plan.pending as Array<{ transaction?: unknown; receiptId?: unknown }>;
-    if (!Array.isArray(pending) || pending.length === 0) throw new Error(`${endpoint} has no pending cleanup steps`);
-    for (const item of pending) {
-      await signHttpStep(item);
-      total++;
+    if (plan.status === "wait_for_cleanup_receipt") {
+      throw new Error(`Revocation has an unconfirmed cleanup receipt: ${String(plan.receiptId)}`);
     }
+    if (plan.status !== "sign_cleanup") throw new Error("Revocation returned an unexpected cleanup step");
+    await signHttpStep(plan);
+    total++;
   }
-  throw new Error(`${endpoint} did not finish cleanup`);
+  throw new Error("Revocation did not finish cleanup");
 }
 
 async function denied(action: () => Promise<unknown>, label: string): Promise<void> {
@@ -254,27 +251,19 @@ async function revoke(): Promise<void> {
   const request = paymentRequestAddress(new PublicKey(company), requester.publicKey, new BN(requestId)).toBase58();
   assert.equal((await readPaymentRequest(company, request, auth(viewer))).status, "executed");
   assert.equal((await readAgentPolicy(company, agentPolicy, auth(finance))).revoked, false);
-  const managerCleaned = await revokeAndClean(managerGrant,
-    "/v1/access/manager-revocation-cleanup/plan",
-    { actor: founder.publicKey.toBase58(), grant: managerGrant, parentGrant: financeGrant });
+  const managerCleaned = await revokeAndClean(managerGrant);
   await denied(() => readPaymentRequest(company, request, auth(manager)), "Manager request");
   await submit("setRequestReadersV2", founder, { request, includeRequester: true,
     includeFinance: true, manager: null, viewer: viewer.publicKey.toBase58(), viewerGrant });
   assert.equal((await readPaymentRequest(company, request, auth(requester))).status, "executed");
-  const requesterCleaned = await revokeAndClean(requesterGrant,
-    "/v1/access/member-revocation-cleanup/plan",
-    { actor: founder.publicKey.toBase58(), grant: requesterGrant });
+  const requesterCleaned = await revokeAndClean(requesterGrant);
   await denied(() => readPaymentRequest(company, request, auth(requester)), "Requester request");
   await submit("setRequestReadersV2", founder, { request, includeRequester: false,
     includeFinance: true, manager: null, viewer: viewer.publicKey.toBase58(), viewerGrant });
   assert.equal((await readPaymentRequest(company, request, auth(viewer))).status, "executed");
-  const viewerCleaned = await revokeAndClean(viewerGrant,
-    "/v1/access/member-revocation-cleanup/plan",
-    { actor: founder.publicKey.toBase58(), grant: viewerGrant });
+  const viewerCleaned = await revokeAndClean(viewerGrant);
   await denied(() => readPaymentRequest(company, request, auth(viewer)), "Viewer request");
-  const financeCleaned = await revokeAndClean(financeGrant,
-    "/v1/access/finance-revocation-cleanup/plan",
-    { actor: founder.publicKey.toBase58(), grant: financeGrant });
+  const financeCleaned = await revokeAndClean(financeGrant);
   await denied(() => readCompanyPolicy(company, auth(finance)), "Finance policy");
   await denied(() => readPaymentRequest(company, request, auth(finance)), "Finance request");
   await denied(() => readTreasurySnapshot(company, auth(finance)), "Finance snapshot");
