@@ -4,7 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { confirmOnboardingReceipt, confirmedOnboardingStep, recordOnboardingBuild,
+import { confirmOnboardingReceipt, confirmedOnboardingStep, getOnboardingReceipt, listOnboardingReceipts,
+  reconcileOnboardingReceipt, recordOnboardingBuild,
   waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "../src/onboarding-journal.ts";
 
 test("onboarding journal binds an unsigned build to its exact signed message", async () => {
@@ -35,6 +36,9 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
     assert.equal(confirmedOnboardingStep(receipt.company, receipt.target, receipt.operation), false);
     assert.equal(statSync(path).mode & 0o777, 0o600);
     assert.equal(JSON.parse(readFileSync(path, "utf8")).receipts[0].id, receipt.id);
+    assert.equal(getOnboardingReceipt(receipt.id, receipt.company).status, "built");
+    assert.equal(listOnboardingReceipts(receipt.company).length, 1);
+    assert.equal((await reconcileOnboardingReceipt(receipt.id, receipt.company, "token")).status, "built");
     await assert.rejects(() => confirmOnboardingReceipt(receipt.id, unsigned, ""), /does not match/);
     const different = build(2);
     different.sign(founder);
@@ -46,6 +50,8 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
     assert.equal(confirmed.status, "confirmed");
     assert.equal(waitForCleanupReceipt(confirmed), false);
     assert.equal(confirmedOnboardingStep(receipt.company, receipt.target, receipt.operation), true);
+    assert.equal((await reconcileOnboardingReceipt(receipt.id, receipt.company, "token",
+      async () => null)).status, "confirmed");
 
     const v0Message = new TransactionMessage({
       payerKey: founder.publicKey, recentBlockhash: Keypair.generate().publicKey.toBase58(),
@@ -75,6 +81,34 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
     await confirmOnboardingReceipt(registered.id, registrationTx.serialize().toString("base64"), "token",
       async () => ({ err: null, confirmationStatus: "confirmed" }));
     assert.equal(hasConfirmedRecipientDeposit(recipient.toBase58()), true);
+
+    const pendingTx = build(4);
+    const pendingBuild = recordOnboardingBuild({ company: founder.publicKey.toBase58(),
+      target: recipient.toBase58(), operation: "pendingSetup", chain: "ephemeral",
+      transactionBase64: pendingTx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64") });
+    pendingTx.sign(founder);
+    const signedPending = pendingTx.serialize().toString("base64");
+    assert.equal((await confirmOnboardingReceipt(pendingBuild.id, signedPending, "token", async () => null)).status, "pending");
+    assert.equal((await reconcileOnboardingReceipt(pendingBuild.id, pendingBuild.company, "token",
+      async () => ({ err: null, confirmationStatus: "confirmed" }))).status, "confirmed");
+    assert.equal((await confirmOnboardingReceipt(pendingBuild.id, signedPending, "token", async () => null)).status, "confirmed");
+
+    const concurrentTx = build(5);
+    const concurrent = recordOnboardingBuild({ company: founder.publicKey.toBase58(),
+      target: recipient.toBase58(), operation: "concurrentSetup", chain: "ephemeral",
+      transactionBase64: concurrentTx.serialize({ requireAllSignatures: false,
+        verifySignatures: false }).toString("base64") });
+    concurrentTx.sign(founder);
+    await confirmOnboardingReceipt(concurrent.id, concurrentTx.serialize().toString("base64"), "token",
+      async () => {
+        const otherTx = build(6);
+        recordOnboardingBuild({ company: founder.publicKey.toBase58(), target: recipient.toBase58(),
+          operation: "otherSetup", chain: "ephemeral",
+          transactionBase64: otherTx.serialize({ requireAllSignatures: false,
+            verifySignatures: false }).toString("base64") });
+        return { err: null, confirmationStatus: "confirmed" };
+      });
+    assert.equal(listOnboardingReceipts(concurrent.company).length, 6);
   } finally {
     if (previous === undefined) delete process.env.MERCURY_ONBOARDING_JOURNAL;
     else process.env.MERCURY_ONBOARDING_JOURNAL = previous;

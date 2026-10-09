@@ -6,7 +6,7 @@ import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { TEE_RPC } from "./operations.ts";
 
-type Receipt = {
+export type Receipt = {
   id: string; company: string; target: string; operation: string;
   chain: "base" | "ephemeral"; signature: string | null;
   status: "built" | "pending" | "confirmed" | "failed";
@@ -72,7 +72,13 @@ export function recordOnboardingBuild(args: {
   const id = messageId(transaction);
   const journal = readJournal();
   const existing = journal.receipts.find((receipt) => receipt.id === id);
-  if (existing) return existing;
+  if (existing) {
+    if (existing.company !== args.company || existing.target !== args.target ||
+        existing.operation !== args.operation || existing.chain !== args.chain) {
+      throw new Error("Onboarding transaction is already bound to another step");
+    }
+    return existing;
+  }
   const receipt: Receipt = {
     id, company: args.company, target: args.target, operation: args.operation,
     chain: args.chain, signature: null, status: "built",
@@ -94,6 +100,17 @@ export function latestOnboardingReceipt(company: string, target: string, operati
     receipt.company === company && receipt.target === target && receipt.operation === operation).at(-1) ?? null;
 }
 
+export function getOnboardingReceipt(id: string, company: string): Receipt {
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid receipt ID");
+  const receipt = readJournal().receipts.find((item) => item.id === id && item.company === company);
+  if (!receipt) throw new Error("Unknown onboarding receipt");
+  return receipt;
+}
+
+export function listOnboardingReceipts(company: string): Receipt[] {
+  return readJournal().receipts.filter((item) => item.company === company);
+}
+
 // A confirmed Private Payments deposit is Mercury's privacy-preserving
 // recipient registration evidence. It proves the app observed onboarding
 // without giving a Founder a reader permission over that recipient's balance.
@@ -113,8 +130,7 @@ export async function confirmOnboardingReceipt(id: string, signedTransactionBase
   teeToken: string, statusLookup?: (chain: "base" | "ephemeral", signature: string) =>
     Promise<{ err: unknown; confirmationStatus: string | null } | null>): Promise<Receipt> {
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid receipt ID");
-  const journal = readJournal();
-  const receipt = journal.receipts.find((item) => item.id === id);
+  const receipt = readJournal().receipts.find((item) => item.id === id);
   if (!receipt) throw new Error("Unknown onboarding receipt");
   const transaction = deserialize(Buffer.from(signedTransactionBase64, "base64"));
   const signature = firstVerifiedSignature(transaction);
@@ -122,6 +138,7 @@ export async function confirmOnboardingReceipt(id: string, signedTransactionBase
     throw new Error("Signed transaction does not match the prepared onboarding step");
   }
   const signatureText = bs58.encode(signature);
+  if (receipt.signature && receipt.signature !== signatureText) throw new Error("Receipt already has another signature");
   const endpoint = new URL(receipt.chain === "base"
     ? (process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com") : TEE_RPC);
   if (receipt.chain === "ephemeral") {
@@ -132,10 +149,47 @@ export async function confirmOnboardingReceipt(id: string, signedTransactionBase
     ? await statusLookup(receipt.chain, signatureText)
     : (await new Connection(endpoint.toString(), "confirmed")
       .getSignatureStatuses([signatureText], { searchTransactionHistory: true })).value[0];
-  receipt.signature = signatureText;
-  receipt.status = status?.err ? "failed" : status?.confirmationStatus === "confirmed" ||
+  const latestJournal = readJournal();
+  const latest = latestJournal.receipts.find((item) => item.id === id);
+  if (!latest) throw new Error("Unknown onboarding receipt");
+  if (latest.signature && latest.signature !== signatureText) throw new Error("Receipt already has another signature");
+  latest.signature = signatureText;
+  if (latest.status !== "confirmed" && latest.status !== "failed") {
+    latest.status = status?.err ? "failed" : status?.confirmationStatus === "confirmed" ||
+      status?.confirmationStatus === "finalized" ? "confirmed" : "pending";
+    latest.error = status?.err ?? null;
+  }
+  saveJournal(latestJournal);
+  return latest;
+}
+
+export async function reconcileOnboardingReceipt(id: string, company: string, teeToken: string,
+  statusLookup?: (chain: "base" | "ephemeral", signature: string) =>
+    Promise<{ err: unknown; confirmationStatus: string | null } | null>): Promise<Receipt> {
+  const receipt = readJournal().receipts.find((item) => item.id === id && item.company === company);
+  if (!receipt) throw new Error("Unknown onboarding receipt");
+  if (!receipt.signature || receipt.status === "confirmed" || receipt.status === "failed") return receipt;
+  const endpoint = new URL(receipt.chain === "base"
+    ? (process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com") : TEE_RPC);
+  if (receipt.chain === "ephemeral") {
+    if (!teeToken) throw new Error("TEE auth token required");
+    endpoint.searchParams.set("token", teeToken);
+  }
+  const status = statusLookup
+    ? await statusLookup(receipt.chain, receipt.signature)
+    : (await new Connection(endpoint.toString(), "confirmed")
+      .getSignatureStatuses([receipt.signature], { searchTransactionHistory: true })).value[0];
+  const journal = readJournal();
+  const latest = journal.receipts.find((item) => item.id === id && item.company === company);
+  if (!latest) throw new Error("Unknown onboarding receipt");
+  if (latest.signature !== receipt.signature) throw new Error("Receipt signature changed during reconciliation");
+  if (latest.status === "confirmed" || latest.status === "failed") return latest;
+  const next = status?.err ? "failed" : status?.confirmationStatus === "confirmed" ||
     status?.confirmationStatus === "finalized" ? "confirmed" : "pending";
-  receipt.error = status?.err ?? null;
-  saveJournal(journal);
-  return receipt;
+  if (next !== latest.status || (status?.err ?? null) !== latest.error) {
+    latest.status = next;
+    latest.error = status?.err ?? null;
+    saveJournal(journal);
+  }
+  return latest;
 }
