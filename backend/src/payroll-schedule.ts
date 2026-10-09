@@ -6,11 +6,11 @@ import { createPayrollRun, getPayrollRun } from "./payroll-run.ts";
 import { paymentId } from "./payment-journal.ts";
 import { type EncryptedPayrollRoster, validateEncryptedPayrollRoster } from "./payroll-roster-crypto.ts";
 
-export type PayrollCadence = "weekly" | "biweekly" | "monthly";
+export type PayrollCadence = "weekly" | "biweekly" | "monthly" | "per_employee";
 export type PayrollSchedule = {
   scheduleId: string; company: string; name: string; cadence: PayrollCadence;
   firstPayDate: string; timeZone: string; encryptedRoster: EncryptedPayrollRoster;
-  paused: boolean; revision: number; createdAt: string; updatedAt: string;
+  paused: boolean; revision: number; rosterRevision: number; createdAt: string; updatedAt: string;
 };
 type Journal = { version: 1; schedules: PayrollSchedule[] };
 const DEFAULT_PATH = new URL("../.state/payroll-schedules.json", import.meta.url).pathname;
@@ -43,6 +43,7 @@ export function localDate(now: Date, timeZone: string): string {
 }
 
 export function latestPayDate(schedule: Pick<PayrollSchedule, "cadence" | "firstPayDate">, today: string): string | null {
+  if (schedule.cadence === "per_employee") return null;
   const first = dateMs(schedule.firstPayDate);
   const current = dateMs(today);
   if (current < first) return null;
@@ -58,6 +59,7 @@ export function latestPayDate(schedule: Pick<PayrollSchedule, "cadence" | "first
 }
 
 export function nextPayDate(schedule: Pick<PayrollSchedule, "cadence" | "firstPayDate">, today: string): string {
+  if (schedule.cadence === "per_employee") throw new Error("Per-employee schedules have no single next pay date");
   const latest = latestPayDate(schedule, today);
   if (!latest) return schedule.firstPayDate;
   if (schedule.cadence !== "monthly") return addDays(latest, schedule.cadence === "weekly" ? 7 : 14);
@@ -69,6 +71,7 @@ export function nextPayDate(schedule: Pick<PayrollSchedule, "cadence" | "firstPa
 
 export function recentDueDates(schedule: Pick<PayrollSchedule, "cadence" | "firstPayDate">,
   today: string, limit = 12): string[] {
+  if (schedule.cadence === "per_employee") return [];
   const newest = latestPayDate(schedule, today);
   if (!newest) return [];
   const dates: string[] = [];
@@ -90,7 +93,10 @@ function readJournal(): Journal {
   try {
     const journal = JSON.parse(readFileSync(path(), "utf8")) as Journal;
     if (journal.version !== 1 || !Array.isArray(journal.schedules)) throw new Error("Invalid payroll schedule journal");
-    for (const schedule of journal.schedules) schedule.revision ??= 0;
+    for (const schedule of journal.schedules) {
+      schedule.revision ??= 0;
+      schedule.rosterRevision ??= 1;
+    }
     return journal;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, schedules: [] };
@@ -112,8 +118,9 @@ export function createPayrollSchedule(companyInput: unknown, input: Record<strin
   if (typeof input.name !== "string" || input.name.trim().length < 1 || input.name.trim().length > 80) {
     throw new Error("Schedule name must be 1 to 80 characters");
   }
-  if (input.cadence !== "weekly" && input.cadence !== "biweekly" && input.cadence !== "monthly") {
-    throw new Error("Cadence must be weekly, biweekly, or monthly");
+  if (input.cadence !== "weekly" && input.cadence !== "biweekly" && input.cadence !== "monthly" &&
+      input.cadence !== "per_employee") {
+    throw new Error("Cadence must be weekly, biweekly, monthly, or per_employee");
   }
   if (typeof input.firstPayDate !== "string") throw new Error("firstPayDate is required");
   dateMs(input.firstPayDate);
@@ -136,7 +143,7 @@ export function createPayrollSchedule(companyInput: unknown, input: Record<strin
   const now = new Date().toISOString();
   const schedule: PayrollSchedule = { scheduleId, company, name: input.name.trim(), cadence: input.cadence,
     firstPayDate: input.firstPayDate, timeZone: input.timeZone, encryptedRoster,
-    paused: false, revision: 0, createdAt: now, updatedAt: now };
+    paused: false, revision: 0, rosterRevision: 1, createdAt: now, updatedAt: now };
   journal.schedules.push(schedule);
   saveJournal(journal);
   return schedule;
@@ -164,7 +171,13 @@ export function updatePayrollSchedule(companyInput: unknown, idInput: unknown, i
     if (typeof input.paused !== "boolean") throw new Error("paused must be boolean");
     schedule.paused = input.paused;
   }
-  if (input.encryptedRoster !== undefined) schedule.encryptedRoster = validateEncryptedPayrollRoster(input.encryptedRoster);
+  if (input.encryptedRoster !== undefined) {
+    const roster = validateEncryptedPayrollRoster(input.encryptedRoster);
+    if (JSON.stringify(roster) !== JSON.stringify(schedule.encryptedRoster)) {
+      schedule.encryptedRoster = roster;
+      schedule.rosterRevision++;
+    }
+  }
   if (input.paused === undefined && input.encryptedRoster === undefined) throw new Error("No schedule update supplied");
   schedule.revision++;
   schedule.updatedAt = new Date().toISOString();
@@ -187,8 +200,10 @@ export function payrollScheduleView(schedule: PayrollSchedule, now = new Date())
   const today = localDate(now, schedule.timeZone);
   return { scheduleId: schedule.scheduleId, name: schedule.name, cadence: schedule.cadence,
     firstPayDate: schedule.firstPayDate, timeZone: schedule.timeZone, paused: schedule.paused,
-    revision: schedule.revision, createdAt: schedule.createdAt, updatedAt: schedule.updatedAt, today,
-    latestPayDate: latestPayDate(schedule, today), nextPayDate: nextPayDate(schedule, today),
+    revision: schedule.revision, rosterRevision: schedule.rosterRevision,
+    perEmployeeCadence: schedule.cadence === "per_employee", createdAt: schedule.createdAt, updatedAt: schedule.updatedAt, today,
+    latestPayDate: latestPayDate(schedule, today),
+    nextPayDate: schedule.cadence === "per_employee" ? null : nextPayDate(schedule, today),
     dueCycles: recentDueDates(schedule, today).map((payDate) => {
       const runId = scheduledRunId(schedule.company, schedule.scheduleId, payDate);
       let launched = false;
@@ -208,14 +223,38 @@ export function launchScheduledPayroll(companyInput: unknown, idInput: unknown,
   const schedule = getPayrollSchedule(companyInput, idInput);
   if (schedule.paused) throw new Error("Payroll schedule is paused");
   if (typeof input.payDate !== "string") throw new Error("payDate is required");
+  if (input.rosterRevision !== schedule.rosterRevision) {
+    throw new Error("Roster changed; reload and launch the current roster revision");
+  }
   const today = localDate(now, schedule.timeZone);
-  if (dateMs(input.payDate) > dateMs(today) || latestPayDate(schedule, input.payDate) !== input.payDate) {
+  if (dateMs(input.payDate) > dateMs(today) ||
+      (schedule.cadence !== "per_employee" && latestPayDate(schedule, input.payDate) !== input.payDate)) {
     throw new Error("payDate is not a due cycle for this schedule");
   }
+  const items = schedule.cadence === "per_employee"
+    ? dueEmployeeItems(input.items, input.payDate)
+    : input.items;
   const runId = scheduledRunId(schedule.company, schedule.scheduleId, input.payDate);
-  const run = createPayrollRun(runId, schedule.company, { requester: input.requester, items: input.items });
+  const run = createPayrollRun(runId, schedule.company, { requester: input.requester, items,
+    scheduleId: schedule.scheduleId, rosterRevision: schedule.rosterRevision, payDate: input.payDate });
   return { scheduleId: schedule.scheduleId, payDate: input.payDate, runId: run.runId,
     items: run.items.map((item) => ({ paymentId: item.paymentId, request: item.request,
       next: `/v1/payment-flows/${item.paymentId}/next` })),
     approve: `/v1/payroll-runs/${run.runId}/approve`, status: `/v1/payroll-runs/${run.runId}` };
+}
+
+function dueEmployeeItems(value: unknown, payDate: string): unknown[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error("At least one due employee is required");
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(`Invalid employee at index ${index}`);
+    const employee = item as Record<string, unknown>;
+    if (employee.cadence !== "weekly" && employee.cadence !== "biweekly" && employee.cadence !== "monthly") {
+      throw new Error(`Employee ${index + 1} needs weekly, biweekly, or monthly cadence`);
+    }
+    if (typeof employee.firstPayDate !== "string" || latestPayDate({ cadence: employee.cadence,
+      firstPayDate: employee.firstPayDate }, payDate) !== payDate) {
+      throw new Error(`Employee ${index + 1} is not due on ${payDate}`);
+    }
+    return { recipient: employee.recipient, amountMicro: employee.amountMicro };
+  });
 }

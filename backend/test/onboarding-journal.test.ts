@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { confirmOnboardingReceipt, confirmedOnboardingStep, recordOnboardingBuild,
-  waitForCleanupReceipt } from "../src/onboarding-journal.ts";
+  waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "../src/onboarding-journal.ts";
 
 test("onboarding journal binds an unsigned build to its exact signed message", async () => {
   const directory = mkdtempSync(join(tmpdir(), "mercury-onboarding-"));
@@ -62,6 +62,19 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
       Buffer.from(v0.serialize()).toString("base64"), "token",
       async () => ({ err: null, confirmationStatus: "confirmed" }));
     assert.equal(v0Confirmed.status, "confirmed");
+    assert.equal(hasConfirmedRecipientDeposit(recipient.toBase58()), false);
+
+    const registrationTx = build(3);
+    const registrationUnsigned = registrationTx.serialize({ requireAllSignatures: false,
+      verifySignatures: false }).toString("base64");
+    const registered = recordOnboardingBuild({
+      company: founder.publicKey.toBase58(), target: `${recipient.toBase58()}:initial`,
+      operation: "recipientDeposit", chain: "base", transactionBase64: registrationUnsigned,
+    });
+    registrationTx.sign(founder);
+    await confirmOnboardingReceipt(registered.id, registrationTx.serialize().toString("base64"), "token",
+      async () => ({ err: null, confirmationStatus: "confirmed" }));
+    assert.equal(hasConfirmedRecipientDeposit(recipient.toBase58()), true);
   } finally {
     if (previous === undefined) delete process.env.MERCURY_ONBOARDING_JOURNAL;
     else process.env.MERCURY_ONBOARDING_JOURNAL = previous;

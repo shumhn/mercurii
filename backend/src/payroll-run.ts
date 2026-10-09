@@ -15,6 +15,7 @@ const MAX_ROSTER_ITEMS = 100;
 export type PayrollItem = { paymentId: string; request: string; requester: string; requestId: string };
 export type PayrollRun = {
   runId: string; company: string; termsHash: string; items: PayrollItem[]; createdAt: string;
+  scheduleId: string | null; rosterRevision: number | null; payDate: string | null;
 };
 export type PayrollProgressItem = { paymentId: string; requestStatus: string;
   paymentState: string | null; amountMicro: string | null };
@@ -66,6 +67,7 @@ export function createPayrollRun(runIdInput: unknown, companyInput: unknown, inp
   const runId = paymentId(runIdInput);
   const company = asAddress(companyInput, "company");
   const requester = asAddress(input.requester, "requester");
+  const source = payrollSource(input);
   if (!Array.isArray(input.items) || input.items.length < 1 || input.items.length > MAX_ROSTER_ITEMS) {
     throw new Error(`Payroll run requires 1 to ${MAX_ROSTER_ITEMS} employees`);
   }
@@ -84,7 +86,7 @@ export function createPayrollRun(runIdInput: unknown, companyInput: unknown, inp
   }
   const total = rows.reduce((sum, row) => sum + BigInt(row.amountMicro), 0n);
   if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Payroll total exceeds safe integer range");
-  const termsHash = createHash("sha256").update(JSON.stringify({ requester, rows })).digest("hex");
+  const termsHash = createHash("sha256").update(JSON.stringify({ requester, rows, source })).digest("hex");
   const journal = readJournal();
   const existing = journal.runs.find((item) => item.runId === runId);
   if (existing && (existing.company !== company || existing.termsHash !== termsHash)) {
@@ -99,10 +101,25 @@ export function createPayrollRun(runIdInput: unknown, companyInput: unknown, inp
     return { paymentId: id, request: flow.request, requester: flow.requester, requestId: flow.requestId };
   });
   if (existing) return existing;
-  const run: PayrollRun = { runId, company, termsHash, items, createdAt: new Date().toISOString() };
+  const run: PayrollRun = { runId, company, termsHash, items, createdAt: new Date().toISOString(), ...source };
   journal.runs.push(run);
   saveJournal(journal);
   return run;
+}
+
+function payrollSource(input: Record<string, unknown>): Pick<PayrollRun, "scheduleId" | "rosterRevision" | "payDate"> {
+  const sourceFields = [input.scheduleId, input.rosterRevision, input.payDate];
+  if (sourceFields.every((value) => value === undefined)) {
+    return { scheduleId: null, rosterRevision: null, payDate: null };
+  }
+  const scheduleId = paymentId(input.scheduleId);
+  if (!Number.isSafeInteger(input.rosterRevision) || Number(input.rosterRevision) < 1) {
+    throw new Error("rosterRevision must be a positive integer");
+  }
+  if (typeof input.payDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(input.payDate)) {
+    throw new Error("payDate must be YYYY-MM-DD");
+  }
+  return { scheduleId, rosterRevision: Number(input.rosterRevision), payDate: input.payDate };
 }
 
 export function payrollNextAction(item: PayrollProgressItem): string {

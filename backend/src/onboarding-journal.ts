@@ -94,6 +94,14 @@ export function latestOnboardingReceipt(company: string, target: string, operati
     receipt.company === company && receipt.target === target && receipt.operation === operation).at(-1) ?? null;
 }
 
+// A confirmed Private Payments deposit is Mercury's privacy-preserving
+// recipient registration evidence. It proves the app observed onboarding
+// without giving a Founder a reader permission over that recipient's balance.
+export function hasConfirmedRecipientDeposit(recipient: string): boolean {
+  return readJournal().receipts.some((receipt) => receipt.operation === "recipientDeposit" &&
+    receipt.status === "confirmed" && receipt.target.startsWith(`${recipient}:`));
+}
+
 export function waitForCleanupReceipt(receipt: Receipt | null, now = Date.now()): boolean {
   if (!receipt || (receipt.status !== "built" && receipt.status !== "pending")) return false;
   const created = Date.parse(receipt.createdAt);

@@ -62,13 +62,13 @@ test("scheduled payroll stores only ciphertext and reuses one run ID for a due c
     assert.equal(payrollScheduleView(schedule, new Date("2026-10-10T04:00:00Z")).dueCycles[0]?.state,
       "overdue");
     assert.throws(() => launchScheduledPayroll(company, scheduleId,
-      { payDate: "2026-10-16", ...roster }, now), /not a due cycle/);
-    const first = launchScheduledPayroll(company, scheduleId, { payDate: "2026-10-09", ...roster }, now);
+      { payDate: "2026-10-16", rosterRevision: 1, ...roster }, now), /not a due cycle/);
+    const first = launchScheduledPayroll(company, scheduleId, { payDate: "2026-10-09", rosterRevision: 1, ...roster }, now);
     assert.equal(first.items.length, 1);
-    assert.equal(launchScheduledPayroll(company, scheduleId, { payDate: "2026-10-09", ...roster }, now).runId,
+    assert.equal(launchScheduledPayroll(company, scheduleId, { payDate: "2026-10-09", rosterRevision: 1, ...roster }, now).runId,
       first.runId);
     assert.throws(() => launchScheduledPayroll(company, scheduleId, { payDate: "2026-10-09",
-      requester, items: [{ recipient, amountMicro: 2_000_000 }] }, now), /different employees or amounts/);
+      rosterRevision: 1, requester, items: [{ recipient, amountMicro: 2_000_000 }] }, now), /different employees or amounts/);
     assert.equal(payrollScheduleView(schedule, now).dueCycles[0]?.launched, true);
     assert.equal(payrollScheduleView(schedule, now).dueCycles[0]?.state, "launched");
     assert.equal(readFileSync(runFile, "utf8").includes(recipient), false);
@@ -77,13 +77,48 @@ test("scheduled payroll stores only ciphertext and reuses one run ID for a due c
     assert.throws(() => updatePayrollSchedule(company, scheduleId,
       { paused: false, expectedRevision: 0 }), /reload/);
     assert.throws(() => launchScheduledPayroll(company, scheduleId,
-      { payDate: "2026-10-09", ...roster }, now), /paused/);
+      { payDate: "2026-10-09", rosterRevision: 1, ...roster }, now), /paused/);
     assert.throws(() => createPayrollSchedule(company, { ...terms, timeZone: "UTC" }), /different terms/);
   } finally {
     const keys = ["MERCURY_PAYROLL_SCHEDULE_JOURNAL", "MERCURY_PAYROLL_JOURNAL", "MERCURY_PAYMENT_FLOW_JOURNAL"] as const;
     keys.forEach((key, index) => {
       if (prior[index] === undefined) delete process.env[key]; else process.env[key] = prior[index];
     });
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("per-employee schedules pay only people due on that pay date and bind roster revision", () => {
+  const directory = mkdtempSync(join(tmpdir(), "mercury-mixed-payroll-"));
+  const prior = [process.env.MERCURY_PAYROLL_SCHEDULE_JOURNAL,
+    process.env.MERCURY_PAYROLL_JOURNAL, process.env.MERCURY_PAYMENT_FLOW_JOURNAL];
+  process.env.MERCURY_PAYROLL_SCHEDULE_JOURNAL = join(directory, "schedules.json");
+  process.env.MERCURY_PAYROLL_JOURNAL = join(directory, "runs.json");
+  process.env.MERCURY_PAYMENT_FLOW_JOURNAL = join(directory, "flows.json");
+  try {
+    const company = Keypair.generate().publicKey.toBase58();
+    const requester = Keypair.generate().publicKey.toBase58();
+    const weekly = Keypair.generate().publicKey.toBase58();
+    const monthly = Keypair.generate().publicKey.toBase58();
+    const schedule = createPayrollSchedule(company, { scheduleId: randomUUID(), name: "Flexible payroll",
+      cadence: "per_employee", firstPayDate: "2026-10-01", timeZone: "Asia/Kathmandu",
+      encryptedRoster: sealPayrollRoster({ encrypted: true }, "private payroll recovery phrase") });
+    const now = new Date("2026-10-09T04:00:00Z");
+    assert.equal(payrollScheduleView(schedule, now).perEmployeeCadence, true);
+    assert.deepEqual(payrollScheduleView(schedule, now).dueCycles, []);
+    const result = launchScheduledPayroll(company, schedule.scheduleId, { requester, payDate: "2026-10-09", rosterRevision: 1,
+      items: [{ recipient: weekly, amountMicro: 1_000_000, cadence: "weekly", firstPayDate: "2026-10-02" }] }, now);
+    assert.equal(result.items.length, 1);
+    assert.throws(() => launchScheduledPayroll(company, schedule.scheduleId, { requester, payDate: "2026-10-09", rosterRevision: 1,
+      items: [{ recipient: monthly, amountMicro: 1_000_000, cadence: "monthly", firstPayDate: "2026-10-01" }] }, now), /not due/);
+    const revised = updatePayrollSchedule(company, schedule.scheduleId, { expectedRevision: 0,
+      encryptedRoster: sealPayrollRoster({ encrypted: "new" }, "private payroll recovery phrase") });
+    assert.equal(revised.rosterRevision, 2);
+    assert.throws(() => launchScheduledPayroll(company, schedule.scheduleId, { requester, payDate: "2026-10-09", rosterRevision: 1,
+      items: [{ recipient: weekly, amountMicro: 1_000_000, cadence: "weekly", firstPayDate: "2026-10-02" }] }, now), /Roster changed/);
+  } finally {
+    const keys = ["MERCURY_PAYROLL_SCHEDULE_JOURNAL", "MERCURY_PAYROLL_JOURNAL", "MERCURY_PAYMENT_FLOW_JOURNAL"] as const;
+    keys.forEach((key, index) => { if (prior[index] === undefined) delete process.env[key]; else process.env[key] = prior[index]; });
     rmSync(directory, { recursive: true, force: true });
   }
 });

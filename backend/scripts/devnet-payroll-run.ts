@@ -20,6 +20,8 @@ function key(name: string): Keypair {
   return Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, "utf8"))));
 }
 const founder = key("MERCURY_FOUNDER_KEYPAIR");
+const onboardingPayer = process.env.MERCURY_PAYROLL_ONBOARDING_PAYER_KEYPAIR
+  ? key("MERCURY_PAYROLL_ONBOARDING_PAYER_KEYPAIR") : null;
 const recipientPaths = process.env.MERCURY_PAYROLL_RECIPIENT_KEYPAIRS?.split(",").map((path) => path.trim()).filter(Boolean);
 const recipients = recipientPaths?.length
   ? recipientPaths.map((path) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, "utf8")))))
@@ -41,7 +43,7 @@ const server = spawn(process.execPath, ["--experimental-strip-types", "src/serve
   cwd: new URL("../", import.meta.url).pathname,
   env: { ...process.env, PORT: String(port), MERCURY_COMPANY_ADDRESS: COMPANY,
     MERCURY_FOUNDER_ADDRESS: founder.publicKey.toBase58(), MERCURY_COMPANY_MINT: DEVNET_USDC,
-    MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS: "1" },
+    MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS: "1", MERCURY_ENABLE_EXPERIMENTAL_RECEIVE: "1" },
   stdio: ["ignore", "pipe", "pipe"],
 });
 server.stderr.on("data", (chunk) => process.stderr.write(chunk));
@@ -60,9 +62,9 @@ async function waitForServer(): Promise<void> {
   }
   throw new Error("Payroll backend did not start");
 }
-async function send(transaction: any): Promise<{ signed: string; signature: string }> {
+async function send(transaction: any, signer = founder): Promise<{ signed: string; signature: string }> {
   const tx = Transaction.from(Buffer.from(transaction.transactionBase64, "base64"));
-  tx.sign(founder);
+  tx.sign(signer);
   const signed = tx.serialize().toString("base64");
   const url = new URL(transaction.sendTo === "base" ? BASE_RPC : TEE_RPC);
   if (transaction.sendTo === "ephemeral") url.searchParams.set("token", token);
@@ -75,6 +77,19 @@ async function send(transaction: any): Promise<{ signed: string; signature: stri
     await new Promise((resolve) => setTimeout(resolve, 750));
   }
   throw new Error(`Transaction timed out: ${signature}`);
+}
+
+async function registerPayrollRecipient(recipient: Keypair, depositId: string): Promise<void> {
+  if (!onboardingPayer) {
+    throw new Error("MERCURY_PAYROLL_ONBOARDING_PAYER_KEYPAIR with Circle devnet USDC is required to register a new payroll recipient");
+  }
+  const next = await api("/v1/onboarding/recipient/next", { recipient: recipient.publicKey.toBase58(),
+    payer: onboardingPayer.publicKey.toBase58(), amountMicro: 1, depositId });
+  if (next.status === "ready") return;
+  assert.equal(next.status, "needs_deposit");
+  const sent = await send(next.transaction, onboardingPayer);
+  const receipt = await api(`/v1/onboarding/receipts/${next.receiptId}/confirm`, { signedTransactionBase64: sent.signed });
+  assert.equal(receipt.status, "confirmed");
 }
 
 async function onboardFailedRecipient(): Promise<string> {
@@ -134,6 +149,14 @@ try {
   assert.equal(preview.budgetCoversValidRows, true);
   const roster = { runId, requester: founder.publicKey.toBase58(),
     items: preview.items.map((item: any) => ({ recipient: item.recipient, amountMicro: item.amountMicro })) };
+  for (const [index, recipient] of recipients.entries()) {
+    await registerPayrollRecipient(recipient, `ready-${runId.slice(0, 8)}-${index}`);
+  }
+  const readiness = await api("/v1/payroll-runs/readiness", { items: roster.items });
+  assert.equal(readiness.recipientsReady, true);
+  assert.equal(readiness.policyCoversTotal, true);
+  assert.equal(readiness.snapshotCoversTotal, true);
+  assert.equal(readiness.canCreateRun, true);
   const useSchedule = process.env.MERCURY_PAYROLL_TEST_SCHEDULE === "1";
   let scheduleId: string | null = null;
   let run: any;
@@ -150,7 +173,7 @@ try {
     assert.deepEqual(openPayrollRoster(recovered.encryptedRoster, passphrase),
       { requester: roster.requester, items: roster.items });
     const launchBody = signedSchedule("launch", { actor: founder.publicKey.toBase58(), scheduleId,
-      payDate, requester: roster.requester, items: roster.items });
+      payDate, rosterRevision: schedule.rosterRevision, requester: roster.requester, items: roster.items });
     run = await api(`/v1/payroll-schedules/${scheduleId}/launch`, launchBody);
     runId = run.runId;
     assert.equal((await api(`/v1/payroll-schedules/${scheduleId}/launch`, launchBody)).runId, runId);

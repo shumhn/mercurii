@@ -7,7 +7,7 @@ import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
 import { inspectMemberGrant } from "./member-onboarding.ts";
 import { confirmOnboardingReceipt, latestOnboardingReceipt, recordOnboardingBuild,
-  waitForCleanupReceipt } from "./onboarding-journal.ts";
+  waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
@@ -16,6 +16,7 @@ import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
 import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
 import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
+import { checkPayrollReadiness } from "./payroll-readiness.ts";
 import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payroll-approval.ts";
 import { previewPayrollCsv } from "./payroll-roster.ts";
 import { createPayrollSchedule, getPayrollSchedule, launchScheduledPayroll, listPayrollSchedules,
@@ -671,6 +672,28 @@ createServer(async (req, res) => {
         snapshotUpdatedSlot: snapshot?.updatedSlot ?? null,
         note: "Snapshot can be stale; contract rechecks the current period budget and token balance at approval and payout" });
     }
+    if (req.method === "POST" && req.url === "/v1/payroll-runs/readiness") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req, 70_000);
+      const [policy, snapshot, readiness] = await Promise.all([
+        readCompanyPolicy(companyAddress, token),
+        readTreasurySnapshot(companyAddress, token).catch(() => null),
+        checkPayrollReadiness({ items: body.items, isRegistered: hasConfirmedRecipientDeposit }),
+      ]);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      const total = BigInt(readiness.totalMicro);
+      const remainingPolicyBudgetMicro = BigInt(String(policy.monthlyLimitMicro)) - BigInt(String(policy.spentMicro)) -
+        BigInt(String(policy.reservedMicro));
+      const recipientsReady = readiness.readyCount === readiness.items.length;
+      const snapshotCoversTotal = snapshot === null ? null : BigInt(snapshot.balanceMicro) >= total;
+      return reply(res, 200, { ...readiness, recipientsReady,
+        remainingPolicyBudgetMicro: remainingPolicyBudgetMicro.toString(),
+        policyCoversTotal: remainingPolicyBudgetMicro >= total,
+        snapshotBalanceMicro: snapshot?.balanceMicro ?? null, snapshotCoversTotal,
+        canCreateRun: recipientsReady && remainingPolicyBudgetMicro >= total && snapshotCoversTotal === true,
+        note: "This is a private preflight only. The contract rechecks budget and token balance before each payout." });
+    }
     if (req.method === "POST" && req.url === "/v1/payroll-runs") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -693,7 +716,7 @@ createServer(async (req, res) => {
         ...run, status: `/v1/payroll-runs/${run.runId}`,
       })) });
     }
-    const payrollRun = req.url?.match(/^\/v1\/payroll-runs\/([^/?]+)(?:\/(approve))?$/);
+    const payrollRun = req.url?.match(/^\/v1\/payroll-runs\/([^/?]+)(?:\/(approve|recover))?$/);
     if (payrollRun && req.method === "GET" && !payrollRun[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -1008,6 +1031,43 @@ createServer(async (req, res) => {
         return reply(res, 200, { record: bound, broadcast: "uncertain",
           next: "reconcile_or_retry_same_signed_transaction" });
       }
+    }
+    if (payrollRun && req.method === "POST" && payrollRun[2] === "recover") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Payment execution requires the verified Circle devnet USDC token CPI flow" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      const run = getPayrollRun(payrollRun[1], companyAddress);
+      const wanted = body.paymentIds === undefined ? null : new Set(
+        Array.isArray(body.paymentIds) ? body.paymentIds.map(paymentId) : (() => { throw new Error("paymentIds must be an array"); })(),
+      );
+      if (wanted && [...wanted].some((id) => !run.items.some((item) => item.paymentId === id))) {
+        throw new Error("paymentIds includes an item outside this payroll run");
+      }
+      const recoveries = [];
+      for (const item of run.items.filter((row) => wanted === null || wanted.has(row.paymentId))) {
+        const request = await readPaymentRequest(companyAddress, item.request, token);
+        const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
+          request: item.request, requester: item.requester, requestId: item.requestId });
+        const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
+        const reconciled = reconcilePayment(item.paymentId, companyAddress, String(request.status), chain?.status ?? null);
+        if (request.status === "executed") {
+          recoveries.push({ paymentId: item.paymentId, status: "settled" });
+        } else if (request.status === "approved" && reconciled.state === "failed") {
+          const plan = await executionPlan(item.request, actor, body.grant, token);
+          const rebuilt = preparePayment(item.paymentId, companyAddress, actor, plan.transaction.transactionBase64);
+          recoveries.push({ paymentId: item.paymentId, status: "build", record: rebuilt, transaction: plan.transaction });
+        } else {
+          recoveries.push({ paymentId: item.paymentId, status: "reconcile", requestStatus: request.status,
+            paymentState: reconciled.state, chainStatus: chain?.status ?? null,
+            next: `/v1/payment-jobs/${item.paymentId}` });
+        }
+      }
+      return reply(res, 200, { runId: run.runId, recoveries,
+        note: "Only confirmed failed signatures are rebuilt. Each replacement payout still needs the authorized signer." });
     }
     if (req.method === "GET" && req.url?.startsWith("/v1/payments/") && req.url.endsWith("/status")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
