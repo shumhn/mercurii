@@ -5,6 +5,7 @@ import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
 import { createAssistantChallenge, consumeAssistantChallenge } from "./assistant-auth.ts";
 import { answerAssistantQuestion, classifyAssistantQuestion, resolveAssistantAccess } from "./finance-assistant.ts";
+import { runMercuryAgent } from "./mercury-agent.ts";
 import { reserveInvoiceFlow } from "./invoice-journal.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
@@ -739,6 +740,24 @@ createServer(async (req, res) => {
         allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1" });
       return reply(res, 200, await answerAssistantQuestion({ company: companyAddress, access, teeToken: token,
         intent, requestAddress: body.requestAddress }));
+    }
+    if (req.method === "POST" && req.url === "/v1/agent/chat") {
+      if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Mercury agent is disabled" });
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const actor = consumeAssistantChallenge({ company: companyAddress, actor: body.actor,
+        challengeId: body.challengeId, signature: body.signature });
+      return reply(res, 200, await runMercuryAgent({ company: companyAddress, founder: founderAddress,
+        actor, grant: body.grant, teeToken: token, message: body.message,
+        requestAddress: body.requestAddress, selectedPayeeId: body.selectedPayeeId,
+        selectedRecipient: body.selectedRecipient, paymentId: body.paymentId,
+        modelUrl: process.env.MERCURY_AGENT_MODEL_URL ?? process.env.MERCURY_LLM_URL ??
+          "https://api.fireworks.ai/inference/v1/chat/completions",
+        modelName: process.env.MERCURY_AGENT_MODEL ?? process.env.MERCURY_LLM_MODEL ??
+          "accounts/fireworks/models/deepseek-v4p1-flash",
+        modelApiKey: process.env.MERCURY_FIREWORKS_API_KEY ?? process.env.MERCURY_LLM_API_KEY,
+        allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1" }));
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });

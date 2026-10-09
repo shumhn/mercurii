@@ -15,7 +15,7 @@ export function createAssistantChallenge(companyInput: unknown, actorInput: unkn
   const actor = asAddress(actorInput, "actor");
   const challengeId = randomBytes(24).toString("hex");
   const expiresAt = now + TTL_MS;
-  const message = `Mercury assistant read access\nCompany: ${company}\nWallet: ${actor}\nNonce: ${challengeId}\nExpires: ${new Date(expiresAt).toISOString()}`;
+  const message = `Mercury agent session (read private data and prepare unsigned drafts; never approve or pay)\nCompany: ${company}\nWallet: ${actor}\nNonce: ${challengeId}\nExpires: ${new Date(expiresAt).toISOString()}`;
   for (const [id, challenge] of challenges) if (challenge.expiresAt <= now) challenges.delete(id);
   if (challenges.size >= MAX_PENDING) challenges.delete(challenges.keys().next().value!);
   challenges.set(challengeId, { actor, company, message, expiresAt });
