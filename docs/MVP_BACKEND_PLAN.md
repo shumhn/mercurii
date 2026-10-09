@@ -12,3 +12,9 @@ The backend and contract milestones target a newly configured Circle devnet USDC
 6. **Invoice Agent Suggest.** Model extraction is checked against the registered vendor name, fixed payout wallet, and invoice cap. A keyed local journal binds one vendor invoice number to one guided payment ID; a repeated suggestion cannot create a second private request, and changed terms stop for review. The Agent needs a Requester grant and must sign its own request steps. Founder activates request privacy; Founder or Finance approves and executes. The backend holds no Agent signing key. A live end-to-end invoice-to-private-payout proof, invoice file ingestion, and authenticated document storage remain.
 
 The first three milestones plus a working payroll run are the backend/program MVP. Frontend wallet login and signing are separate integration work. Mainnet requires additional security and recovery work described in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+## Next engine acceptance run
+
+Use a newly configured Circle devnet USDC company and an Agent wallet with a Founder-issued Requester grant. Extract one registered-vendor invoice through the local model, confirm a repeated suggestion returns the same payment ID, then sign the guided shell, delegation, privacy activation, and private submission steps. Founder or Finance reviews and approves the private request, signs its payout, and verifies the executed receipt and private balance snapshot. Change the invoice amount under the same vendor invoice number and confirm the backend blocks a second request. Finally, retry the settled payment ID and confirm no second payout occurs. This full Agent-to-payment run has **not** been proven yet.
+
+After that, exercise abandoned onboarding receipts, RPC timeout recovery, and the reconciliation watch runner on a fresh company. Snapshot synchronization still needs an authorized wallet signature; the watcher must report that action rather than holding the Founder key.
