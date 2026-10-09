@@ -18,6 +18,9 @@ import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, pa
 import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
 import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payroll-approval.ts";
 import { previewPayrollCsv } from "./payroll-roster.ts";
+import { createPayrollSchedule, getPayrollSchedule, launchScheduledPayroll, listPayrollSchedules,
+  payrollScheduleView, updatePayrollSchedule } from "./payroll-schedule.ts";
+import { verifyPayrollScheduleFounder } from "./payroll-schedule-auth.ts";
 import { deactivatePayee, linkPaymentPayee, listPayees, matchPayee, paymentPayee, registerPayee } from "./payee-journal.ts";
 import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
   getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
@@ -615,6 +618,39 @@ createServer(async (req, res) => {
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must deactivate a payee");
       const { recipientHash, ...payee } = deactivatePayee(companyAddress, deactivate[1]);
       return reply(res, 200, { payee });
+    }
+    if (req.url === "/v1/payroll-schedules" && (req.method === "GET" || req.method === "POST")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      if (req.method === "GET") return reply(res, 200, {
+        schedules: listPayrollSchedules(companyAddress).map((schedule) => payrollScheduleView(schedule)),
+      });
+      const body = await readJson(req, 90_000);
+      verifyPayrollScheduleFounder("create", companyAddress, founderAddress, body);
+      return reply(res, 200, payrollScheduleView(createPayrollSchedule(companyAddress, body)));
+    }
+    const payrollSchedule = req.url?.match(/^\/v1\/payroll-schedules\/([^/?]+)(?:\/(launch))?$/);
+    if (payrollSchedule && ["GET", "PATCH", "POST"].includes(req.method ?? "")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const policy = await readCompanyPolicy(companyAddress, token);
+      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      if (req.method === "GET" && !payrollSchedule[2]) {
+        const schedule = getPayrollSchedule(companyAddress, payrollSchedule[1]);
+        return reply(res, 200, { ...payrollScheduleView(schedule), encryptedRoster: schedule.encryptedRoster });
+      }
+      const body = await readJson(req, 90_000);
+      if (req.method === "PATCH" && !payrollSchedule[2]) {
+        verifyPayrollScheduleFounder("update", companyAddress, founderAddress, body, payrollSchedule[1]);
+        return reply(res, 200, payrollScheduleView(updatePayrollSchedule(companyAddress, payrollSchedule[1], body)));
+      }
+      if (req.method === "POST" && payrollSchedule[2] === "launch") {
+        verifyPayrollScheduleFounder("launch", companyAddress, founderAddress, body, payrollSchedule[1]);
+        if (asAddress(body.requester, "requester") !== founderAddress) throw new Error("Founder must launch this MVP payroll run");
+        return reply(res, 200, launchScheduledPayroll(companyAddress, payrollSchedule[1], body));
+      }
     }
     if (req.method === "POST" && req.url === "/v1/payroll-runs/preview") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
