@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { BN } from "@coral-xyz/anchor";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
+import { reserveInvoiceFlow } from "./invoice-journal.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
 import { inspectMemberGrant } from "./member-onboarding.ts";
@@ -683,7 +684,21 @@ createServer(async (req, res) => {
         modelApiKey: process.env.MERCURY_LLM_API_KEY,
         allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1",
       });
-      return reply(res, 200, suggestion);
+      const linked = reserveInvoiceFlow({
+        company: companyAddress, vendorId: String(suggestion.vendorId),
+        invoiceNumber: String(suggestion.invoiceNumber), agent: String(suggestion.agent),
+        recipient: String(suggestion.recipient), amountMicro: String(suggestion.amountMicro),
+      });
+      const { requestPlan: _requestPlan, nextStep: _nextStep, ...draft } = suggestion;
+      return reply(res, 200, {
+        ...draft, ...linked,
+        guidedFlow: `/v1/payment-flows/${linked.paymentId}/next`,
+        flowTerms: {
+          requester: suggestion.agent, recipient: suggestion.recipient,
+          amountMicro: Number(suggestion.amountMicro), includeFinance: true,
+        },
+        nextStep: "Review the draft. The Agent needs a Founder-issued Requester grant and signs request steps; Founder activates privacy; Founder or Finance approves and executes the private payment.",
+      });
     }
     if (req.method === "GET" && req.url?.startsWith("/v1/delegation/")) {
       const account = decodeURIComponent(req.url.slice("/v1/delegation/".length));
