@@ -29,6 +29,7 @@
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "devnet:real-agent-invoice-proof": "node --experimental-strip-types scripts/devnet-real-agent-invoice-payout-proof.ts",
+    "devnet:shared-company-loop-proof": "node --env-file=.env.local --experimental-strip-types scripts/devnet-shared-company-loop-proof.ts",
     "devnet:audit-share-proof": "node --experimental-strip-types scripts/devnet-audit-share-proof.ts",
     "supabase:check": "node --env-file=.env.local --experimental-strip-types scripts/supabase-healthcheck.ts",
     "supabase:backfill": "node --env-file=.env.local --experimental-strip-types scripts/supabase-backfill.ts",
