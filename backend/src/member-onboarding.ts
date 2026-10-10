@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { asAddress, delegationStatus } from "./magicblock.ts";
@@ -40,7 +41,7 @@ export async function inspectMemberGrant(args: {
   if (args.role !== "requester" && args.role !== "viewer") throw new Error("role must be requester or viewer");
   if (typeof args.grantId !== "string" || !/^\d+$/.test(args.grantId) ||
       BigInt(args.grantId) > (1n << 64n) - 1n) throw new Error("grantId must be a u64 decimal string");
-  const id = new anchor.BN(args.grantId);
+  const id = new BN(args.grantId);
   const scope = args.branchId === null || args.branchId === undefined ? PublicKey.default :
     branchScopeAddress(company, args.branchId as number);
   const policy = await readCompanyPolicy(company.toBase58(), args.teeToken);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, Keypair, PublicKey, SystemProgram } from "@solana/web3.js";
 import {
   EPHEMERAL_VAULT_ID,
@@ -125,7 +126,7 @@ async function main(): Promise<void> {
   }
   let authorized = await (erProgram.account as any).companyPolicy.fetch(policy);
   if (authorized.monthlyLimitMicro.toString() !== "100000000" || authorized.agentCapMicro.toString() !== "10000000") {
-    const transaction = await erProgram.methods.configureLimits(new anchor.BN(100_000_000), new anchor.BN(10_000_000))
+    const transaction = await erProgram.methods.configureLimits(new BN(100_000_000), new BN(10_000_000))
       .accountsPartial({ founder: founder.publicKey, policy }).transaction();
     transaction.recentBlockhash = (await er.getLatestBlockhash()).blockhash;
     transaction.feePayer = founder.publicKey;
@@ -144,7 +145,7 @@ async function main(): Promise<void> {
   assert.equal(outsiderBlocked, true, "outsider could read the private policy");
   process.stdout.write(`PASS: private policy ${policy.toBase58()} readable by Founder and denied to outsider\n`);
 
-  const requestId = new anchor.BN(requestIdText);
+  const requestId = new BN(requestIdText);
   const [request] = PublicKey.findProgramAddressSync([
     Buffer.from("payment-request"), policy.toBuffer(), founder.publicKey.toBuffer(), requestId.toArrayLike(Buffer, "le", 8),
   ], programId);
@@ -179,7 +180,7 @@ async function main(): Promise<void> {
   }
   requestState = await (erProgram.account as any).paymentRequest.fetch(request);
   if (requestState.status === 0) {
-    const tx = await erProgram.methods.submitPayment(finance.publicKey, new anchor.BN(requestAmountMicro))
+    const tx = await erProgram.methods.submitPayment(finance.publicKey, new BN(requestAmountMicro))
       .accountsPartial({ requester: founder.publicKey, request }).transaction();
     process.stdout.write(`submit_payment: ${await sendEr(erProvider, tx)}\n`);
   }
@@ -248,7 +249,7 @@ async function main(): Promise<void> {
   }
   agentState = await (erProgram.account as any).agentPolicy.fetch(agentPolicy);
   if (agentState.perPaymentCapMicro.toString() === "0") {
-    const tx = await erProgram.methods.configureAgent(finance.publicKey, new anchor.BN(500_000), new anchor.BN(2_000_000))
+    const tx = await erProgram.methods.configureAgent(finance.publicKey, new BN(500_000), new BN(2_000_000))
       .accountsPartial({ founder: founder.publicKey, agentPolicy }).transaction();
     process.stdout.write(`configure_agent: ${await sendEr(erProvider, tx)}\n`);
   }

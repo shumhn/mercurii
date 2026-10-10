@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { BN } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { getAuthToken } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { Connection, Keypair, PublicKey, Transaction } from "@solana/web3.js";
 import nacl from "tweetnacl";

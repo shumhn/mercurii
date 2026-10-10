@@ -7,7 +7,7 @@ import { TEE_VALIDATOR } from "./operations.ts";
 
 export async function nextRecipientOnboarding(args: {
   recipient: unknown; payer: unknown; amountMicro: unknown; teeToken: string;
-  receipt?: { id: string; status: "built" | "pending" | "confirmed" | "failed" } | null;
+  receipt?: { id: string; status: "built" | "pending" | "confirmed" | "failed" | "expired" } | null;
   readBalance?: typeof readRecipientBalance;
   buildDeposit?: typeof prepareRecipientOnboarding;
 }): Promise<{
@@ -30,7 +30,7 @@ export async function nextRecipientOnboarding(args: {
   } catch (error) {
     if (!(error instanceof Error) || error.message !== "Private recipient token balance unavailable") throw error;
   }
-  if (args.receipt && args.receipt.status !== "failed") {
+  if (args.receipt && args.receipt.status !== "failed" && args.receipt.status !== "expired") {
     return { status: "wait", recipient, balanceMicro: null, transaction: null, receiptId: args.receipt.id };
   }
   const transaction = await (args.buildDeposit ?? prepareRecipientOnboarding)({

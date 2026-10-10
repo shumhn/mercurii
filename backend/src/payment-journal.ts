@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { asAddress } from "./magicblock.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 export type PaymentRecord = {
   paymentId: string; company: string; request: string; requester: string; requestId: string;
@@ -40,6 +41,7 @@ function saveJournal(journal: Journal): void {
   const temporary = `${target}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, target);
+  mirrorCompanyJournal({ domain: "payments", journal, rowKeys: ["payments"] });
 }
 
 export function getPayment(id: unknown, company: string): PaymentRecord {

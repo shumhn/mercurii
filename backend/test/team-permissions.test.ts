@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import * as anchor from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, Keypair } from "@solana/web3.js";
 import { PROGRAM_ID, teamGrantAddress } from "../src/operations.ts";
 
@@ -9,7 +10,7 @@ const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.u
 const actor = Keypair.generate().publicKey;
 const company = Keypair.generate().publicKey;
 const request = Keypair.generate().publicKey;
-const grant = teamGrantAddress(company, actor, Keypair.generate().publicKey, new anchor.BN(0));
+const grant = teamGrantAddress(company, actor, Keypair.generate().publicKey, new BN(0));
 const program = new anchor.Program(idl, new anchor.AnchorProvider(
   new Connection("http://127.0.0.1:8899"),
   { publicKey: actor, signTransaction: async () => { throw new Error("no signing"); },
@@ -27,7 +28,7 @@ test("Founder payment encodes absent grants with the Anchor optional-account sen
 });
 
 test("Finance and Manager approval instructions carry distinct grant accounts", async () => {
-  const managerGrant = teamGrantAddress(company, actor, Keypair.generate().publicKey, new anchor.BN(1));
+  const managerGrant = teamGrantAddress(company, actor, Keypair.generate().publicKey, new BN(1));
   const financeApproval = await program.methods.approvePayment().accountsPartial({
     actor, policy: company, request, grant, parentGrant: PROGRAM_ID,
   }).instruction();

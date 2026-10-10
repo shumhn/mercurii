@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { PublicKey } from "@solana/web3.js";
 import { asAddress } from "./magicblock.ts";
 import { paymentId } from "./payment-journal.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 const DEFAULT_PATH = new URL("../.state/payees.json", import.meta.url).pathname;
 const path = () => process.env.MERCURY_PAYEE_JOURNAL ?? DEFAULT_PATH;
@@ -32,6 +33,7 @@ function saveJournal(journal: Journal): void {
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, destination);
+  mirrorCompanyJournal({ domain: "payees", journal, rowKeys: ["payees", "links"] });
 }
 
 function recipientHash(company: string, recipient: string): string {

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
@@ -71,7 +72,7 @@ export async function inspectManagerGrant(args: {
   const scope = branchScopeAddress(company, args.branchId);
   if (typeof args.grantId !== "string" || !/^\d+$/.test(args.grantId) ||
       BigInt(args.grantId) > (1n << 64n) - 1n) throw new Error("grantId must be a u64 decimal string");
-  const id = new anchor.BN(args.grantId);
+  const id = new BN(args.grantId);
   const perCap = asMicroAmount(args.perPaymentCapMicro);
   const periodCap = asMicroAmount(args.periodCapMicro);
   if (perCap > periodCap) throw new Error("Manager period cap must cover one payment");

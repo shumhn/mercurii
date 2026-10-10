@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import {
   EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID,
@@ -23,11 +24,11 @@ function asId(value: unknown): anchor.BN {
   if (typeof value !== "string" || !/^\d+$/.test(value)) throw new Error("requestId must be a decimal string");
   const id = BigInt(value);
   if (id > (1n << 64n) - 1n) throw new Error("requestId exceeds u64");
-  return new anchor.BN(value);
+  return new BN(value);
 }
 
 function positiveMicro(value: unknown): anchor.BN {
-  return new anchor.BN(asMicroAmount(value));
+  return new BN(asMicroAmount(value));
 }
 
 export function paymentRequestAddress(company: PublicKey, requester: PublicKey, id: anchor.BN): PublicKey {
@@ -400,8 +401,8 @@ export async function buildOperation(input: BuildInput, config: {
       if (role === 0) throw new Error("role must be finance, manager, requester, or viewer");
       tx = await program.methods.configureGrant(
         role, input.scope ? pub(input.scope, "scope") : PublicKey.default,
-        role >= 3 ? new anchor.BN(0) : positiveMicro(input.perPaymentCapMicro),
-        role >= 3 ? new anchor.BN(0) : positiveMicro(input.periodCapMicro),
+        role >= 3 ? new BN(0) : positiveMicro(input.perPaymentCapMicro),
+        role >= 3 ? new BN(0) : positiveMicro(input.periodCapMicro),
         recipients, input.mayDelegate === true,
       ).accountsPartial({ grantor: actor, policy: company, grant, parent }).transaction();
       break;

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
-import { confirmOnboardingReceipt, confirmedOnboardingStep, getOnboardingReceipt, listOnboardingReceipts,
+import { confirmOnboardingReceipt, confirmedOnboardingStep, expireUnsignedOnboardingReceipt, getOnboardingReceipt, listOnboardingReceipts,
   reconcileOnboardingReceipt, recordOnboardingBuild,
   waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "../src/onboarding-journal.ts";
 
@@ -109,6 +109,29 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
         return { err: null, confirmationStatus: "confirmed" };
       });
     assert.equal(listOnboardingReceipts(concurrent.company).length, 6);
+
+    const abandonedTx = build(7);
+    const abandoned = recordOnboardingBuild({ company: founder.publicKey.toBase58(),
+      target: recipient.toBase58(), operation: "abandonedStep", chain: "base",
+      transactionBase64: abandonedTx.serialize({ requireAllSignatures: false,
+        verifySignatures: false }).toString("base64") });
+    assert.equal(abandoned.blockhash, abandonedTx.recentBlockhash);
+    assert.equal((await expireUnsignedOnboardingReceipt(abandoned.id, abandoned.company, "",
+      async () => { throw new Error("A fresh transaction must not be checked for expiry"); },
+      Date.parse(abandoned.createdAt) + 89_999)).status, "built");
+    assert.equal((await expireUnsignedOnboardingReceipt(abandoned.id, abandoned.company, "",
+      async (chain, blockhash) => {
+        assert.equal(chain, "base");
+        assert.equal(blockhash, abandonedTx.recentBlockhash);
+        return true;
+      }, Date.parse(abandoned.createdAt) + 90_000)).status, "built");
+    assert.equal((await expireUnsignedOnboardingReceipt(abandoned.id, abandoned.company, "",
+      async () => false, Date.parse(abandoned.createdAt) + 90_000)).status, "expired");
+    abandonedTx.sign(founder);
+    await assert.rejects(() => confirmOnboardingReceipt(abandoned.id,
+      abandonedTx.serialize().toString("base64"), "", async () => null), /expired/);
+    assert.equal((await expireUnsignedOnboardingReceipt(pendingBuild.id, pendingBuild.company, "token",
+      async () => { throw new Error("Signed receipts must not be expired"); })).status, "confirmed");
   } finally {
     if (previous === undefined) delete process.env.MERCURY_ONBOARDING_JOURNAL;
     else process.env.MERCURY_ONBOARDING_JOURNAL = previous;

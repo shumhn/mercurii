@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
@@ -34,7 +35,7 @@ function grantId(value: unknown): anchor.BN {
   if (typeof value !== "string" || !/^\d+$/.test(value) || BigInt(value) > (1n << 64n) - 1n) {
     throw new Error("grantId must be a u64 decimal string");
   }
-  return new anchor.BN(value);
+  return new BN(value);
 }
 
 export async function inspectRootFinanceGrant(args: {

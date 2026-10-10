@@ -2,10 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import * as anchor from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
 import { asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
-import { BASE_RPC, PROGRAM_ID, TEE_RPC, paymentRequestAddress } from "./operations.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
+import { BASE_RPC, PROGRAM_ID, TEE_RPC, paymentRequestAddress, requestBranchScope } from "./operations.ts";
 import { confirmedOnboardingStep } from "./onboarding-journal.ts";
 import { paymentId } from "./payment-journal.ts";
 
@@ -14,14 +16,14 @@ const coder = new anchor.BorshAccountsCoder(idl);
 const DEFAULT_PATH = new URL("../.state/payment-flows.json", import.meta.url).pathname;
 const path = () => process.env.MERCURY_PAYMENT_FLOW_JOURNAL ?? DEFAULT_PATH;
 
-type Flow = {
+export type PaymentFlow = {
   paymentId: string; company: string; requester: string; request: string; requestId: string;
   termsHash: string; createdAt: string;
   includeFinance?: boolean; manager?: string | null;
   branchId?: number | null;
   includeRequester?: boolean;
 };
-type Journal = { version: 1; flows: Flow[] };
+type Journal = { version: 1; flows: PaymentFlow[] };
 type RequestData = { company: PublicKey; requester: PublicKey; id: anchor.BN; private_ready: boolean; status: number };
 
 export type PaymentFlowTerms = {
@@ -38,6 +40,23 @@ export type PaymentFlowStep = {
     "activateRequestPrivacy" | "submitPayment" | "approvePayment" | null;
   actor: string | null; sendTo: "base" | "ephemeral" | null; reason: string;
 };
+
+export function validateRequesterGrantForFlow(args: {
+  company: string; founder: string; requester: string; requestId: string;
+  grant: Record<string, unknown>;
+}): void {
+  const { company, founder, requester, requestId, grant } = args;
+  const role = Number(grant.role);
+  const financeRequester = role === 1;
+  if ((role !== 1 && role !== 3) || grant.company !== company ||
+      grant.member !== requester || grant.grantor !== founder ||
+      grant.parent !== PublicKey.default.toBase58() ||
+      grant.active !== true || grant.revoked !== false ||
+      (!financeRequester && grant.scope !== PublicKey.default.toBase58() &&
+        grant.scope !== requestBranchScope(new PublicKey(company), requestId).toBase58())) {
+    throw new Error("Active requester grant for this payment branch is required");
+  }
+}
 
 function readJournal(): Journal {
   try {
@@ -56,6 +75,7 @@ function saveJournal(journal: Journal): void {
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, destination);
+  mirrorCompanyJournal({ domain: "payment-flows", journal, rowKeys: ["flows"] });
 }
 
 function requestIdFor(id: string, branchId: number | null): string {
@@ -88,14 +108,14 @@ function hashTerms(terms: PaymentFlowTerms): string {
 }
 
 export function getOrCreatePaymentFlow(paymentIdInput: unknown, companyInput: unknown,
-  input: Record<string, unknown>): { flow: Flow; terms: PaymentFlowTerms } {
+  input: Record<string, unknown>): { flow: PaymentFlow; terms: PaymentFlowTerms } {
   const payment = paymentId(paymentIdInput);
   const company = asAddress(companyInput, "company");
   const journal = readJournal();
   const existing = journal.flows.find((item) => item.paymentId === payment);
   const terms = normalizedTerms(input, existing !== undefined && existing.branchId === undefined);
   const requestId = existing?.requestId ?? requestIdFor(payment, terms.branchId);
-  const request = paymentRequestAddress(new PublicKey(company), new PublicKey(terms.requester), new anchor.BN(requestId)).toBase58();
+  const request = paymentRequestAddress(new PublicKey(company), new PublicKey(terms.requester), new BN(requestId)).toBase58();
   if (existing) {
     if (existing.company !== company || existing.requester !== terms.requester || existing.request !== request ||
         existing.requestId !== requestId || existing.termsHash !== hashTerms(terms)) {
@@ -111,7 +131,7 @@ export function getOrCreatePaymentFlow(paymentIdInput: unknown, companyInput: un
   if (journal.flows.some((item) => item.company === company && item.request === request)) {
     throw new Error("Derived payment request is already bound to another payment ID");
   }
-  const flow: Flow = { paymentId: payment, company, requester: terms.requester, request, requestId,
+  const flow: PaymentFlow = { paymentId: payment, company, requester: terms.requester, request, requestId,
     termsHash: hashTerms(terms), createdAt: new Date().toISOString(),
     includeFinance: terms.includeFinance, manager: terms.manager, branchId: terms.branchId };
   journal.flows.push(flow);
@@ -146,7 +166,7 @@ export function applyConfirmedReaderCleanup(companyInput: unknown, requestInput:
   saveJournal(journal);
 }
 
-export function getPaymentFlow(paymentIdInput: unknown, companyInput: unknown): Flow {
+export function getPaymentFlow(paymentIdInput: unknown, companyInput: unknown): PaymentFlow {
   const payment = paymentId(paymentIdInput);
   const company = asAddress(companyInput, "company");
   const flow = readJournal().flows.find((item) => item.paymentId === payment && item.company === company);
@@ -158,7 +178,7 @@ function status(value: number | undefined): PaymentFlowObservation["status"] {
   return ["empty", "submitted", "approved", "executed", "rejected"][value ?? -1] as PaymentFlowObservation["status"] ?? "unknown";
 }
 
-export function nextPaymentFlowStep(observation: PaymentFlowObservation, flow: Flow, founder: string): PaymentFlowStep {
+export function nextPaymentFlowStep(observation: PaymentFlowObservation, flow: PaymentFlow, founder: string): PaymentFlowStep {
   if (!observation.exists) return { status: "build", operation: "createRequestShell", actor: flow.requester, sendTo: "base", reason: "Create a public request shell without recipient or amount" };
   if (!observation.delegated) return { status: "build", operation: "delegateRequest", actor: flow.requester, sendTo: "base", reason: "Delegate the request to the selected PER" };
   if (!observation.visibleOnTee) return { status: "wait", operation: null, actor: null, sendTo: null, reason: "Wait for the delegated request to appear on the selected PER" };
@@ -171,7 +191,7 @@ export function nextPaymentFlowStep(observation: PaymentFlowObservation, flow: F
   return { status: "rejected", operation: null, actor: null, sendTo: null, reason: "Payment request was rejected" };
 }
 
-export async function inspectPaymentFlow(flow: Flow, founder: string, teeToken: string): Promise<{
+export async function inspectPaymentFlow(flow: PaymentFlow, founder: string, teeToken: string): Promise<{
   observation: PaymentFlowObservation; step: PaymentFlowStep;
 }> {
   const request = new PublicKey(flow.request);
@@ -203,6 +223,6 @@ export async function inspectPaymentFlow(flow: Flow, founder: string, teeToken: 
   return { observation, step: nextPaymentFlowStep(observation, flow, founder) };
 }
 
-export function flowReceiptOperation(flow: Flow, operation: string): string {
+export function flowReceiptOperation(flow: PaymentFlow, operation: string): string {
   return `paymentFlow:${flow.paymentId}:${operation}`;
 }

@@ -5,11 +5,12 @@ import { Connection, Transaction, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { TEE_RPC } from "./operations.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 export type Receipt = {
   id: string; company: string; target: string; operation: string;
-  chain: "base" | "ephemeral"; signature: string | null;
-  status: "built" | "pending" | "confirmed" | "failed";
+  chain: "base" | "ephemeral"; signature: string | null; blockhash?: string;
+  status: "built" | "pending" | "confirmed" | "failed" | "expired";
   createdAt: string; error: unknown | null;
 };
 type Journal = { version: 1; receipts: Receipt[] };
@@ -34,6 +35,34 @@ function saveJournal(journal: Journal): void {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, path);
+  mirrorCompanyJournal({ domain: "onboarding-receipts", journal, rowKeys: ["receipts"] });
+}
+
+/**
+ * Rebuild the local read cache from encrypted durable receipts at process
+ * start. The cache exists only for the synchronous program inspectors; the
+ * server writes every new or changed receipt through its database repository.
+ */
+export function hydrateOnboardingReceiptCache(receipts: Receipt[]): void {
+  const journal = readJournal();
+  let changed = false;
+  for (const receipt of receipts) {
+    const current = journal.receipts.find((item) => item.id === receipt.id);
+    if (!current) {
+      journal.receipts.push(receipt);
+      changed = true;
+      continue;
+    }
+    if (current.company !== receipt.company || current.target !== receipt.target ||
+        current.operation !== receipt.operation || current.chain !== receipt.chain) {
+      throw new Error("Onboarding receipt cache conflicts with durable receipt");
+    }
+    if (JSON.stringify(current) !== JSON.stringify(receipt)) {
+      Object.assign(current, receipt);
+      changed = true;
+    }
+  }
+  if (changed) saveJournal(journal);
 }
 
 function deserialize(raw: Buffer): Transaction | VersionedTransaction {
@@ -82,11 +111,42 @@ export function recordOnboardingBuild(args: {
   const receipt: Receipt = {
     id, company: args.company, target: args.target, operation: args.operation,
     chain: args.chain, signature: null, status: "built",
+    blockhash: transaction instanceof Transaction ? transaction.recentBlockhash : transaction.message.recentBlockhash,
     createdAt: new Date().toISOString(), error: null,
   };
   journal.receipts.push(receipt);
   saveJournal(journal);
   return receipt;
+}
+
+// Only an unsigned transaction with a proven expired blockhash can be replaced.
+// Older receipts without a recorded blockhash remain manual-recovery cases.
+export async function expireUnsignedOnboardingReceipt(id: string, company: string, teeToken: string,
+  blockhashValid?: (chain: "base" | "ephemeral", blockhash: string) => Promise<boolean>,
+  now = Date.now()): Promise<Receipt> {
+  const receipt = getOnboardingReceipt(id, company);
+  if (receipt.status !== "built" || receipt.signature || !receipt.blockhash) return receipt;
+  const created = Date.parse(receipt.createdAt);
+  if (!Number.isFinite(created) || now - created < 90_000) return receipt;
+  const endpoint = new URL(receipt.chain === "base"
+    ? (process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com") : TEE_RPC);
+  if (receipt.chain === "ephemeral") {
+    if (!teeToken) throw new Error("TEE auth token required");
+    endpoint.searchParams.set("token", teeToken);
+  }
+  const valid = blockhashValid
+    ? await blockhashValid(receipt.chain, receipt.blockhash)
+    : (await new Connection(endpoint.toString(), "confirmed")
+      .isBlockhashValid(receipt.blockhash, { commitment: "finalized" })).value;
+  if (valid) return getOnboardingReceipt(id, company);
+  const journal = readJournal();
+  const latest = journal.receipts.find((item) => item.id === id && item.company === company);
+  if (!latest) throw new Error("Unknown onboarding receipt");
+  if (latest.status === "built" && !latest.signature) {
+    latest.status = "expired";
+    saveJournal(journal);
+  }
+  return latest;
 }
 
 export function confirmedOnboardingStep(company: string, target: string, operation: string): boolean {
@@ -132,6 +192,7 @@ export async function confirmOnboardingReceipt(id: string, signedTransactionBase
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid receipt ID");
   const receipt = readJournal().receipts.find((item) => item.id === id);
   if (!receipt) throw new Error("Unknown onboarding receipt");
+  if (receipt.status === "expired") throw new Error("Onboarding transaction expired; build a new step");
   const transaction = deserialize(Buffer.from(signedTransactionBase64, "base64"));
   const signature = firstVerifiedSignature(transaction);
   if (messageId(transaction) !== id || !signature) {
@@ -152,6 +213,7 @@ export async function confirmOnboardingReceipt(id: string, signedTransactionBase
   const latestJournal = readJournal();
   const latest = latestJournal.receipts.find((item) => item.id === id);
   if (!latest) throw new Error("Unknown onboarding receipt");
+  if (latest.status === "expired") throw new Error("Onboarding transaction expired; build a new step");
   if (latest.signature && latest.signature !== signatureText) throw new Error("Receipt already has another signature");
   latest.signature = signatureText;
   if (latest.status !== "confirmed" && latest.status !== "failed") {

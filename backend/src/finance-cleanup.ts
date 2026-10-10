@@ -34,6 +34,7 @@ export function financeRequestNeedsReset(finance: string, requester: string,
 
 export async function scanFinanceReaderCleanup(args: {
   company: unknown; founder: unknown; grant: unknown; teeToken: string;
+  recordedReaders?: Map<string, { requester: string; includeFinance: boolean; manager: string | null }>;
 }): Promise<FinanceCleanupScan> {
   if (!args.teeToken) throw new Error("Founder TEE auth token required");
   const company = asAddress(args.company, "company");
@@ -55,7 +56,7 @@ export async function scanFinanceReaderCleanup(args: {
   const financeOwnedRequests: string[] = [];
   const agentPolicies: string[] = [];
   const historicalResetRequests: string[] = [];
-  const readers = recordedRequestReaders(company);
+  const readers = args.recordedReaders ?? recordedRequestReaders(company);
   for (const { pubkey, account } of accounts) {
     if (!account.owner.equals(PROGRAM_ID)) continue;
     const bytes = account.data.subarray(0, 8);

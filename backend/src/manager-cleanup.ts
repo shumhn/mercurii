@@ -22,6 +22,7 @@ export function managerRequestNeedsReset(manager: string, requester: string,
 
 export async function scanManagerReaderCleanup(args: {
   company: unknown; founder: unknown; grant: unknown; parentGrant: unknown; teeToken: string;
+  recordedReaders?: Map<string, { requester: string; includeFinance: boolean; manager: string | null }>;
 }): Promise<ManagerCleanupScan> {
   if (!args.teeToken) throw new Error("Founder TEE auth token required");
   const company = asAddress(args.company, "company");
@@ -42,7 +43,7 @@ export async function scanManagerReaderCleanup(args: {
   const endpoint = new URL(TEE_RPC);
   endpoint.searchParams.set("token", args.teeToken);
   const accounts = await new Connection(endpoint.toString(), "confirmed").getProgramAccounts(PROGRAM_ID);
-  const readers = recordedRequestReaders(company);
+  const readers = args.recordedReaders ?? recordedRequestReaders(company);
   const targets: ManagerCleanupScan["targets"] = [];
   const managerOwnedRequests: string[] = [];
   const historicalResetRequests: string[] = [];

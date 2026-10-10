@@ -7,7 +7,7 @@ import test from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
 import { branchScopeAddress, requestBranchScope } from "../src/operations.ts";
 import { applyConfirmedReaderCleanup, getOrCreatePaymentFlow, nextPaymentFlowStep, recordedRequestReaders,
-  type PaymentFlowObservation } from "../src/payment-flow.ts";
+  validateRequesterGrantForFlow, type PaymentFlowObservation } from "../src/payment-flow.ts";
 
 const ready: PaymentFlowObservation = {
   exists: true, delegated: true, visibleOnTee: true, permissionExists: true,
@@ -91,4 +91,20 @@ test("Manager payment ID binds the request to its branch scope", () => {
     else process.env.MERCURY_PAYMENT_FLOW_JOURNAL = previous;
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("Requester grant validates from its own private account without a CompanyPolicy read", () => {
+  const company = Keypair.generate().publicKey.toBase58();
+  const founder = Keypair.generate().publicKey.toBase58();
+  const requester = Keypair.generate().publicKey.toBase58();
+  const requestId = String((73n << 40n) | 7n);
+  const scope = requestBranchScope(new PublicKey(company), requestId).toBase58();
+  const grant = { company, grantor: founder, member: requester,
+    parent: PublicKey.default.toBase58(), role: 3, scope, active: true, revoked: false };
+  const args = { company, founder, requester, requestId, grant };
+  assert.doesNotThrow(() => validateRequesterGrantForFlow(args));
+  assert.throws(() => validateRequesterGrantForFlow({ ...args, grant: { ...grant, revoked: true } }), /Active requester grant/);
+  assert.throws(() => validateRequesterGrantForFlow({ ...args, grant: { ...grant, role: 4 } }), /Active requester grant/);
+  assert.throws(() => validateRequesterGrantForFlow({ ...args, grant: { ...grant, scope: Keypair.generate().publicKey.toBase58() } }), /Active requester grant/);
+  assert.throws(() => validateRequesterGrantForFlow({ ...args, grant: { ...grant, member: founder } }), /Active requester grant/);
 });

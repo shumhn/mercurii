@@ -8,7 +8,7 @@ import {
   BASE_RPC, TEE_RPC, buildOperation, paymentExecutionAccounts, readCompanyPolicy,
   readPaymentRequest, readTeamGrant, teamGrantAddress,
 } from "../src/operations.ts";
-import { BN } from "@coral-xyz/anchor";
+import BN from "bn.js";
 
 const COMPANY = "362A56CsCtCWC3zRLS6ho5MYgp53q2REe6zG9fg8QAKW";
 const PROGRAM = new PublicKey("34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L");

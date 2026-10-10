@@ -1,4 +1,4 @@
-export type FundingReceiptStatus = "built" | "pending" | "confirmed" | "failed" | null;
+export type FundingReceiptStatus = "built" | "pending" | "confirmed" | "failed" | "expired" | null;
 
 export function nextTreasuryFundingStep(
   observedBalanceMicro: string | null,
