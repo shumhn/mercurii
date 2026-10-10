@@ -1,16 +1,26 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { BN } from "@coral-xyz/anchor";
+import BN from "bn.js";
 import { Connection, PublicKey, Transaction } from "@solana/web3.js";
 import { parseVendorRegistry, suggestInvoicePayment } from "./invoice-agent.ts";
-import { createAssistantChallenge, consumeAssistantChallenge } from "./assistant-auth.ts";
+import { assertTeeTokenActor, createPersistentAssistantChallenge, consumePersistentAssistantChallenge,
+  type X402PurchaseIntent } from "./assistant-auth.ts";
 import { answerAssistantQuestion, classifyAssistantQuestion, resolveAssistantAccess } from "./finance-assistant.ts";
 import { runMercuryAgent } from "./mercury-agent.ts";
-import { reserveInvoiceFlow } from "./invoice-journal.ts";
+import { AgentRateLimitError, enforceAgentRateLimit } from "./agent-rate-limit.ts";
+import { appendAgentAudit, listAgentAudit } from "./agent-records.ts";
+import { configuredX402SignerSecret, parseX402Registry } from "./x402-spender.ts";
+import { listInvoicePaymentIds, reserveInvoiceFlow } from "./invoice-journal.ts";
 import { inspectRootFinanceGrant } from "./finance-onboarding.ts";
 import { inspectManagerGrant } from "./manager-onboarding.ts";
 import { inspectMemberGrant } from "./member-onboarding.ts";
-import { confirmOnboardingReceipt, getOnboardingReceipt, latestOnboardingReceipt, listOnboardingReceipts, reconcileOnboardingReceipt, recordOnboardingBuild,
+import { confirmOnboardingReceipt as confirmLocalOnboardingReceipt,
+  expireUnsignedOnboardingReceipt as expireLocalOnboardingReceipt,
+  getOnboardingReceipt as getLocalOnboardingReceipt,
+  hydrateOnboardingReceiptCache, latestOnboardingReceipt as latestLocalOnboardingReceipt,
+  listOnboardingReceipts as listLocalOnboardingReceipts,
+  reconcileOnboardingReceipt as reconcileLocalOnboardingReceipt,
+  recordOnboardingBuild as recordLocalOnboardingBuild,
   waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
@@ -19,7 +29,10 @@ import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
 import { listTeamMembers } from "./team-directory.ts";
 import { inspectCompanyOnboarding } from "./onboarding.ts";
-import { abandonPreparedPayment, bindSignedPayment, getPayment, listPayments, paymentId, paymentReconciliationPage, preparePayment, reconcilePayment, registerPayment } from "./payment-journal.ts";
+import { abandonPreparedPayment as abandonLocalPayment, bindSignedPayment as bindLocalPayment, getPayment as getLocalPayment,
+  listPayments as listLocalPayments, paymentId, paymentReconciliationPage as localPaymentReconciliationPage,
+  preparePayment as prepareLocalPayment, reconcilePayment as reconcileLocalPayment, registerPayment as registerLocalPayment } from "./payment-journal.ts";
+import { DatabasePaymentStore } from "./database-payment-store.ts";
 import { paymentRecoveryAction } from "./reconciliation.ts";
 import { createPayrollRun, getPayrollRun, listPayrollRuns, payrollNextAction, summarizePayroll } from "./payroll-run.ts";
 import { checkPayrollReadiness } from "./payroll-readiness.ts";
@@ -27,11 +40,22 @@ import { buildPayrollApprovalChunk, MAX_APPROVALS_PER_TRANSACTION } from "./payr
 import { previewPayrollCsv } from "./payroll-roster.ts";
 import { createAuditShare, listAuditEvents, listAuditShares, openAuditShare, revokeAuditShare, type AuditBundle } from "./compliance-audit.ts";
 import { createPayrollSchedule, getPayrollSchedule, launchScheduledPayroll, listPayrollSchedules,
-  payrollScheduleView, updatePayrollSchedule } from "./payroll-schedule.ts";
+  payrollScheduleView, updatePayrollSchedule, hydratePayrollScheduleCache } from "./payroll-schedule.ts";
 import { verifyPayrollScheduleFounder } from "./payroll-schedule-auth.ts";
-import { deactivatePayee, linkPaymentPayee, listPayees, matchPayee, paymentPayee, registerPayee } from "./payee-journal.ts";
-import { applyConfirmedReaderCleanup, flowReceiptOperation, getOrCreatePaymentFlow,
-  getPaymentFlow, inspectPaymentFlow } from "./payment-flow.ts";
+import { deactivatePayee as deactivateLocalPayee, linkPaymentPayee as linkLocalPaymentPayee,
+  listPayees as listLocalPayees, matchPayee as matchLocalPayee,
+  paymentPayee as localPaymentPayee, registerPayee as registerLocalPayee } from "./payee-journal.ts";
+import { DatabasePayeeStore } from "./database-payee-store.ts";
+import { DatabasePaymentFlowStore } from "./database-payment-flow-store.ts";
+import { DatabaseInvoiceStore } from "./database-invoice-store.ts";
+import { DatabasePayrollRunStore } from "./database-payroll-store.ts";
+import { DatabasePayrollScheduleStore } from "./database-payroll-schedule-store.ts";
+import { DatabaseOnboardingReceiptStore } from "./database-onboarding-receipt-store.ts";
+import { SupabasePrivateStore } from "./supabase-private-store.ts";
+import { applyConfirmedReaderCleanup as applyLocalConfirmedReaderCleanup, flowReceiptOperation,
+  getOrCreatePaymentFlow as getOrCreateLocalPaymentFlow,
+  getPaymentFlow as getLocalPaymentFlow, inspectPaymentFlow,
+  recordedRequestReaders as recordedLocalPaymentFlowReaders, validateRequesterGrantForFlow } from "./payment-flow.ts";
 import {
   DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
@@ -46,6 +70,157 @@ const companyAddress = asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_C
 const founderAddress = asAddress(process.env.MERCURY_FOUNDER_ADDRESS, "MERCURY_FOUNDER_ADDRESS");
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? "8787");
+const databasePayments = DatabasePaymentStore.fromEnvironment();
+const databasePayees = DatabasePayeeStore.fromEnvironment();
+const databasePaymentFlows = DatabasePaymentFlowStore.fromEnvironment();
+const databaseInvoices = DatabaseInvoiceStore.fromEnvironment();
+const databasePayrollRuns = DatabasePayrollRunStore.fromEnvironment();
+const databasePayrollSchedules = DatabasePayrollScheduleStore.fromEnvironment();
+const databaseOnboardingReceipts = DatabaseOnboardingReceiptStore.fromEnvironment();
+// App indexes follow the same explicit persistence switch as encrypted
+// operational records. A configured development secret alone must not cause
+// an unexpected remote write.
+const appDatabase = process.env.MERCURY_SUPABASE_PERSISTENCE === "1" ?
+  SupabasePrivateStore.fromEnvironment() : null;
+
+const grantRoles: Record<number, "finance" | "manager" | "requester" | "viewer" | "agent"> = {
+  1: "finance", 2: "manager", 3: "requester", 4: "viewer", 5: "agent",
+};
+
+function cacheTeamDirectory(company: string, members: Awaited<ReturnType<typeof listTeamMembers>>): void {
+  if (!appDatabase) return;
+  const entries = members.flatMap(({ member, grants }) => grants.flatMap((grant) => {
+    const role = grantRoles[Number(grant.role)];
+    const grantAddress = typeof grant.address === "string" ? grant.address : null;
+    if (!role || !grantAddress) return [];
+    return [{ walletAddress: member, grantAddress, role,
+      state: grant.revoked === true || grant.active !== true ? "revoked" as const : "active" as const }];
+  }));
+  void appDatabase.upsertCompanyMemberCache(company, entries).catch(() => undefined);
+}
+
+async function getPayment(id: unknown, company: string) {
+  return databasePayments ? databasePayments.get(id, company) : getLocalPayment(id, company);
+}
+async function listPayments(company: unknown, limit = 50) {
+  return databasePayments ? databasePayments.list(company, limit) : listLocalPayments(company, limit);
+}
+async function paymentReconciliationPage(company: unknown, offset: number, limit = 50) {
+  return databasePayments ? databasePayments.reconciliationPage(company, offset, limit) :
+    localPaymentReconciliationPage(company, offset, limit);
+}
+async function registerPayment(args: { paymentId: unknown; company: string; request: string; requester: string; requestId: string }) {
+  return databasePayments ? databasePayments.register(args) : registerLocalPayment(args);
+}
+async function preparePayment(id: unknown, company: string, actor: string, transactionBase64: string) {
+  return databasePayments ? databasePayments.prepare(id, company, actor, transactionBase64) :
+    prepareLocalPayment(id, company, actor, transactionBase64);
+}
+async function abandonPreparedPayment(id: unknown, company: string, blockhashExpired: boolean) {
+  return databasePayments ? databasePayments.abandonPrepared(id, company, blockhashExpired) :
+    abandonLocalPayment(id, company, blockhashExpired);
+}
+async function bindSignedPayment(id: unknown, company: string, signedTransactionBase64: string) {
+  return databasePayments ? databasePayments.bindSigned(id, company, signedTransactionBase64) :
+    bindLocalPayment(id, company, signedTransactionBase64);
+}
+async function reconcilePayment(id: unknown, company: string, requestStatus: string,
+  chainStatus: "not_found" | "processed" | "confirmed" | "failed" | null) {
+  return databasePayments ? databasePayments.reconcile(id, company, requestStatus, chainStatus) :
+    reconcileLocalPayment(id, company, requestStatus, chainStatus);
+}
+async function listPayees(company: unknown) {
+  return databasePayees ? databasePayees.list(company) : listLocalPayees(company);
+}
+async function registerPayee(company: unknown, input: Record<string, unknown>) {
+  return databasePayees ? databasePayees.register(company, input) : registerLocalPayee(company, input);
+}
+async function deactivatePayee(company: unknown, id: unknown) {
+  return databasePayees ? databasePayees.deactivate(company, id) : deactivateLocalPayee(company, id);
+}
+async function matchPayee(company: unknown, id: unknown, recipient: unknown) {
+  return databasePayees ? databasePayees.match(company, id, recipient) : matchLocalPayee(company, id, recipient);
+}
+async function linkPaymentPayee(company: unknown, payment: unknown, payee: unknown) {
+  return databasePayees ? databasePayees.linkPayment(company, payment, payee) : linkLocalPaymentPayee(company, payment, payee);
+}
+async function paymentPayee(company: unknown, payment: unknown) {
+  return databasePayees ? databasePayees.paymentPayee(company, payment) : localPaymentPayee(company, payment);
+}
+async function getOrCreatePaymentFlow(payment: unknown, company: unknown, input: Record<string, unknown>) {
+  return databasePaymentFlows ? databasePaymentFlows.getOrCreate(payment, company, input) :
+    getOrCreateLocalPaymentFlow(payment, company, input);
+}
+async function getPaymentFlow(payment: unknown, company: unknown) {
+  return databasePaymentFlows ? databasePaymentFlows.get(payment, company) : getLocalPaymentFlow(payment, company);
+}
+async function applyConfirmedReaderCleanup(company: unknown, request: unknown, kind: "finance" | "manager" | "all") {
+  return databasePaymentFlows ? databasePaymentFlows.applyConfirmedReaderCleanup(company, request, kind) :
+    applyLocalConfirmedReaderCleanup(company, request, kind);
+}
+async function persistLegacyPaymentFlow(payment: unknown, company: unknown): Promise<void> {
+  if (!databasePaymentFlows) return;
+  await databasePaymentFlows.adopt(getLocalPaymentFlow(payment, company));
+}
+async function recordedPaymentFlowReaders(company: unknown) {
+  return databasePaymentFlows ? databasePaymentFlows.recordedRequestReaders(company) : recordedLocalPaymentFlowReaders(company);
+}
+async function getStoredPayrollRun(id: unknown, company: unknown) { return databasePayrollRuns ? databasePayrollRuns.get(id, company) : getPayrollRun(id, company); }
+async function listStoredPayrollRuns(company: unknown) { return databasePayrollRuns ? databasePayrollRuns.list(company) : listPayrollRuns(company); }
+async function persistPayrollRun(run: ReturnType<typeof getPayrollRun>) { if (databasePayrollRuns) await databasePayrollRuns.adopt(run); }
+async function persistPayrollSchedule(schedule: ReturnType<typeof getPayrollSchedule>) {
+  if (databasePayrollSchedules) await databasePayrollSchedules.persist(schedule);
+}
+
+// The JSON journal remains a derived local cache for synchronous contract
+// inspectors. Supabase is hydrated first and receives every new receipt and
+// state change before the HTTP request returns, so a restart recovers the
+// guided-flow state without relying on the old journal as its source.
+if (databaseOnboardingReceipts) {
+  hydrateOnboardingReceiptCache(await databaseOnboardingReceipts.list(companyAddress));
+}
+if (databasePayrollSchedules) {
+  hydratePayrollScheduleCache(await databasePayrollSchedules.list(companyAddress));
+}
+async function recordOnboardingBuild(args: Parameters<typeof recordLocalOnboardingBuild>[0]) {
+  const receipt = recordLocalOnboardingBuild(args);
+  if (databaseOnboardingReceipts) await databaseOnboardingReceipts.record(receipt);
+  return receipt;
+}
+async function confirmOnboardingReceipt(id: string, signedTransactionBase64: string, token: string) {
+  const receipt = await confirmLocalOnboardingReceipt(id, signedTransactionBase64, token);
+  if (databaseOnboardingReceipts) await databaseOnboardingReceipts.update(receipt.company, receipt.id, () => receipt);
+  return receipt;
+}
+async function reconcileOnboardingReceipt(id: string, company: string, token: string) {
+  const receipt = await reconcileLocalOnboardingReceipt(id, company, token);
+  if (databaseOnboardingReceipts) await databaseOnboardingReceipts.update(receipt.company, receipt.id, () => receipt);
+  return receipt;
+}
+async function expireUnsignedOnboardingReceipt(id: string, company: string, token: string) {
+  const receipt = await expireLocalOnboardingReceipt(id, company, token);
+  if (databaseOnboardingReceipts) await databaseOnboardingReceipts.update(receipt.company, receipt.id, () => receipt);
+  return receipt;
+}
+// Reads are synchronous because the durable receipt set is hydrated into this
+// process before routes are accepted. These names keep the contract inspectors
+// and their route call sites simple while the database remains the restart
+// recovery source.
+const latestOnboardingReceipt = latestLocalOnboardingReceipt;
+const getOnboardingReceipt = getLocalOnboardingReceipt;
+const listOnboardingReceipts = listLocalOnboardingReceipts;
+
+function x402PurchaseIntent(body: Record<string, unknown>): X402PurchaseIntent | undefined {
+  if (body.allowX402Purchase !== true) return undefined;
+  if (process.env.MERCURY_ENABLE_X402_AGENT !== "1") throw new Error("x402 agent purchases are disabled");
+  const registry = parseX402Registry(process.env.MERCURY_X402_SERVICES_JSON ?? "");
+  if (typeof body.selectedX402ServiceId !== "string" ||
+      !Object.hasOwn(registry, body.selectedX402ServiceId)) throw new Error("x402 service is not allowlisted");
+  const service = registry[body.selectedX402ServiceId]!;
+  if (Date.parse(service.expiresAt) <= Date.now()) throw new Error("x402 service approval expired");
+  return { serviceId: body.selectedX402ServiceId, taskId: String(body.x402TaskId),
+    url: service.url, payTo: service.payTo, maxMicro: service.maxMicro };
+}
 
 function optionalAuditTime(value: unknown, name: string): string | null {
   if (value === undefined || value === null || value === "") return null;
@@ -59,7 +234,7 @@ async function buildAuditBundle(body: Record<string, unknown>, token: string): P
   const from = optionalAuditTime(body.from, "from");
   const to = optionalAuditTime(body.to, "to");
   if (from && to && Date.parse(from) > Date.parse(to)) throw new Error("Audit period ends before it starts");
-  const available = listPayrollRuns(companyAddress);
+  const available = await listStoredPayrollRuns(companyAddress);
   const selected = body.runIds === undefined
     ? available.filter((run) => (!from || run.createdAt >= from) && (!to || run.createdAt <= to)).map((run) => run.runId)
     : (() => {
@@ -80,12 +255,12 @@ async function buildAuditBundle(body: Record<string, unknown>, token: string): P
   if (selected.length === 0) throw new Error("No payroll runs match this audit period");
   const payrollRuns = [];
   for (const runId of selected) {
-    const run = getPayrollRun(runId, companyAddress);
+    const run = await getStoredPayrollRun(runId, companyAddress);
     const items = [];
     for (const item of run.items) {
       const request = await readPaymentRequest(companyAddress, item.request, token);
       let payment = null;
-      try { payment = getPayment(item.paymentId, companyAddress); } catch { /* not executed yet */ }
+      try { payment = await getPayment(item.paymentId, companyAddress); } catch { /* not executed yet */ }
       items.push({ paymentId: item.paymentId, request: item.request, recipient: String(request.recipient),
         amountMicro: String(request.amountMicro), requestStatus: String(request.status),
         payoutState: payment?.state ?? null, executionSignature: payment?.signature ?? null });
@@ -135,7 +310,7 @@ async function nextTeamReaderCleanup(grant: string, role: number, parentGrant: s
   for (const target of targets) {
     const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
     if (prior?.status === "confirmed") {
-      if (target.kind === "request") applyConfirmedReaderCleanup(companyAddress, target.address, "all");
+      if (target.kind === "request") await applyConfirmedReaderCleanup(companyAddress, target.address, "all");
       confirmedCount++;
       continue;
     }
@@ -151,7 +326,7 @@ async function nextTeamReaderCleanup(grant: string, role: number, parentGrant: s
       request: target.address, agentPolicy: target.address, includeRequester: false,
       includeFinance: false, manager: null, viewer: null,
     }, { company: companyAddress, founder: founderAddress, teeToken: token });
-    const receipt = recordOnboardingBuild({ company: companyAddress, target: target.address,
+    const receipt = await recordOnboardingBuild({ company: companyAddress, target: target.address,
       operation: operationKey, chain: transaction.sendTo,
       transactionBase64: transaction.transactionBase64 });
     return { status: "sign_cleanup", ...progress, receiptId: receipt.id, transaction };
@@ -297,7 +472,7 @@ createServer(async (req, res) => {
         company: companyAddress, founder: founderAddress, teeToken: token,
       });
       const target = result.next.operation?.includes("Snapshot") ? result.snapshotAddress : companyAddress;
-      const receipt = recordOnboardingBuild({
+      const receipt = await recordOnboardingBuild({
         company: companyAddress, target, operation: result.next.operation!,
         chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
       });
@@ -322,7 +497,7 @@ createServer(async (req, res) => {
         perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro,
         recipients: body.recipients, mayDelegate: body.mayDelegate,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
-      const receipt = recordOnboardingBuild({
+      const receipt = await recordOnboardingBuild({
         company: companyAddress, target: result.grantAddress,
         operation: result.next.operation!, chain: transaction.sendTo,
         transactionBase64: transaction.transactionBase64,
@@ -348,7 +523,7 @@ createServer(async (req, res) => {
         perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro,
         recipients: body.recipients, mayDelegate: false,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
-      const receipt = recordOnboardingBuild({
+      const receipt = await recordOnboardingBuild({
         company: companyAddress, target: result.grantAddress,
         operation: result.next.operation!, chain: transaction.sendTo,
         transactionBase64: transaction.transactionBase64,
@@ -368,7 +543,7 @@ createServer(async (req, res) => {
         member: body.member, grantId: body.grantId, grant: result.grantAddress,
         role: body.role, scope: result.scopeAddress, recipients: [], mayDelegate: false,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
-      const receipt = recordOnboardingBuild({ company: companyAddress, target: result.grantAddress,
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target: result.grantAddress,
         operation: result.next.operation!, chain: transaction.sendTo,
         transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
@@ -376,7 +551,9 @@ createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/v1/team-members") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      return reply(res, 200, { members: await listTeamMembers(companyAddress, token) });
+      const members = await listTeamMembers(companyAddress, token);
+      cacheTeamDirectory(companyAddress, members);
+      return reply(res, 200, { members });
     }
     const revokeGrantRoute = req.url?.match(/^\/v1\/team-grants\/([^/?]+)\/revoke\/next$/);
     if (req.method === "POST" && revokeGrantRoute) {
@@ -416,7 +593,7 @@ createServer(async (req, res) => {
       const transaction = await buildOperation({ operation: "revokeGrant", actor: founderAddress,
         grant: grantAddress, parentGrant: grant.role === 2 ? grant.parent : null,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
-      const receipt = recordOnboardingBuild({ company: companyAddress, target: grantAddress,
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target: grantAddress,
         operation: "revokeGrant", chain: transaction.sendTo,
         transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { status: "sign_revoke", grant: grantAddress,
@@ -429,16 +606,17 @@ createServer(async (req, res) => {
       const id = req.url.slice("/v1/onboarding/receipts/".length, -"/confirm".length);
       const body = await readJson(req);
       if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
+      getOnboardingReceipt(id, companyAddress);
       const receipt = await confirmOnboardingReceipt(id, body.signedTransactionBase64, token);
       if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupFinanceV2:") &&
           receipt.target !== companyAddress) {
-        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+        await applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
       }
       if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupManagerV2:")) {
-        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+        await applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
       }
       if (receipt.status === "confirmed" && receipt.operation.startsWith("cleanupMember:")) {
-        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+        await applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
       }
       return reply(res, 200, receipt);
     }
@@ -453,7 +631,7 @@ createServer(async (req, res) => {
         : await reconcileOnboardingReceipt(id, companyAddress, token);
       if (receipt.status === "confirmed" && /^(cleanupFinanceV2:|cleanupManagerV2:|cleanupMember:)/.test(receipt.operation) &&
           receipt.target !== companyAddress) {
-        applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+        await applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
       }
       return reply(res, 200, { receipt, next: receipt.status === "built" ? "provide_original_signed_transaction_or_inspect_target_state"
         : receipt.status === "pending" ? "wait_and_reconcile_same_signature"
@@ -478,7 +656,7 @@ createServer(async (req, res) => {
         receipt: latestOnboardingReceipt(companyAddress, target, "recipientDeposit"),
       });
       if (!result.transaction) return reply(res, 200, result);
-      const receipt = recordOnboardingBuild({
+      const receipt = await recordOnboardingBuild({
         company: companyAddress, target, operation: "recipientDeposit",
         chain: result.transaction.sendTo, transactionBase64: result.transaction.transactionBase64,
       });
@@ -520,7 +698,7 @@ createServer(async (req, res) => {
           cluster: process.env.MAGICBLOCK_CLUSTER ?? "devnet-private",
           expectedValidator: TEE_VALIDATOR.toBase58(),
         });
-        const receipt = recordOnboardingBuild({
+        const receipt = await recordOnboardingBuild({
           company: companyAddress, target, operation: "privateReceive",
           chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
         });
@@ -531,7 +709,7 @@ createServer(async (req, res) => {
         operation: "syncTreasurySnapshot", actor: founderAddress,
         treasuryToken: canonicalTokenAccount(companyAddress, DEVNET_USDC),
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
-      const receipt = recordOnboardingBuild({
+      const receipt = await recordOnboardingBuild({
         company: companyAddress, target, operation: "syncTreasurySnapshot",
         chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
       });
@@ -545,13 +723,14 @@ createServer(async (req, res) => {
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must run Finance reader cleanup");
       const scan = await scanFinanceReaderCleanup({
         company: companyAddress, founder: founderAddress, grant: body.grant, teeToken: token,
+        recordedReaders: await recordedPaymentFlowReaders(companyAddress),
       });
       const operationKey = `cleanupFinanceV2:${scan.grant}`;
       const pending = [];
       for (const target of scan.targets) {
         const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
         if (prior?.status === "confirmed") {
-          if (target.kind === "request") applyConfirmedReaderCleanup(companyAddress, target.address, "all");
+          if (target.kind === "request") await applyConfirmedReaderCleanup(companyAddress, target.address, "all");
           continue;
         }
         if (prior && waitForCleanupReceipt(prior)) {
@@ -565,7 +744,7 @@ createServer(async (req, res) => {
           actor: founderAddress, request: target.address, includeRequester: false,
           includeFinance: false, manager: null, viewer: null, agentPolicy: target.address,
         }, { company: companyAddress, founder: founderAddress, teeToken: token });
-        const receipt = recordOnboardingBuild({
+        const receipt = await recordOnboardingBuild({
           company: companyAddress, target: target.address, operation: operationKey,
           chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
         });
@@ -592,13 +771,14 @@ createServer(async (req, res) => {
       const scan = await scanManagerReaderCleanup({
         company: companyAddress, founder: founderAddress, grant: body.grant,
         parentGrant: body.parentGrant, teeToken: token,
+        recordedReaders: await recordedPaymentFlowReaders(companyAddress),
       });
       const operationKey = `cleanupManagerV2:${scan.grant}`;
       const pending = [];
       for (const target of scan.targets) {
         const prior = latestOnboardingReceipt(companyAddress, target.address, operationKey);
         if (prior?.status === "confirmed") {
-          applyConfirmedReaderCleanup(companyAddress, target.address, "all");
+          await applyConfirmedReaderCleanup(companyAddress, target.address, "all");
           continue;
         }
         if (prior && waitForCleanupReceipt(prior)) {
@@ -610,7 +790,7 @@ createServer(async (req, res) => {
           operation: "setRequestReadersV2", actor: founderAddress, request: target.address,
           includeRequester: false, includeFinance: false, manager: null, viewer: null,
         }, { company: companyAddress, founder: founderAddress, teeToken: token });
-        const receipt = recordOnboardingBuild({
+        const receipt = await recordOnboardingBuild({
           company: companyAddress, target: target.address, operation: operationKey,
           chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
         });
@@ -637,7 +817,7 @@ createServer(async (req, res) => {
       for (const address of scan.targets) {
         const prior = latestOnboardingReceipt(companyAddress, address, operationKey);
         if (prior?.status === "confirmed") {
-          applyConfirmedReaderCleanup(companyAddress, address, "all");
+          await applyConfirmedReaderCleanup(companyAddress, address, "all");
           continue;
         }
         if (prior && waitForCleanupReceipt(prior)) {
@@ -649,7 +829,7 @@ createServer(async (req, res) => {
           actor: founderAddress, request: address, includeRequester: false,
           includeFinance: false, manager: null, viewer: null,
         }, { company: companyAddress, founder: founderAddress, teeToken: token });
-        const receipt = recordOnboardingBuild({ company: companyAddress, target: address,
+        const receipt = await recordOnboardingBuild({ company: companyAddress, target: address,
           operation: operationKey, chain: transaction.sendTo,
           transactionBase64: transaction.transactionBase64 });
         pending.push({ target: address, receiptId: receipt.id, transaction });
@@ -723,15 +903,17 @@ createServer(async (req, res) => {
     if (req.method === "POST" && req.url === "/v1/assistant/challenge") {
       if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Finance assistant is disabled" });
       const body = await readJson(req);
-      return reply(res, 200, createAssistantChallenge(companyAddress, body.actor));
+      return reply(res, 200, await createPersistentAssistantChallenge(companyAddress, body.actor,
+        Date.now(), x402PurchaseIntent(body)));
     }
     if (req.method === "POST" && req.url === "/v1/assistant/query") {
       if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Finance assistant is disabled" });
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req);
-      const actor = consumeAssistantChallenge({ company: companyAddress, actor: body.actor,
+      const actor = await consumePersistentAssistantChallenge({ company: companyAddress, actor: body.actor,
         challengeId: body.challengeId, signature: body.signature });
+      assertTeeTokenActor(token, actor);
       const access = await resolveAssistantAccess({ company: companyAddress, founder: founderAddress,
         actor, grant: body.grant, teeToken: token });
       const intent = await classifyAssistantQuestion({ question: body.question,
@@ -745,21 +927,73 @@ createServer(async (req, res) => {
       if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Mercury agent is disabled" });
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const body = await readJson(req);
-      const actor = consumeAssistantChallenge({ company: companyAddress, actor: body.actor,
-        challengeId: body.challengeId, signature: body.signature });
-      return reply(res, 200, await runMercuryAgent({ company: companyAddress, founder: founderAddress,
+      const body = await readJson(req, 70_000);
+      const actor = await consumePersistentAssistantChallenge({ company: companyAddress, actor: body.actor,
+        challengeId: body.challengeId, signature: body.signature,
+        x402Intent: x402PurchaseIntent(body) });
+      assertTeeTokenActor(token, actor);
+      enforceAgentRateLimit(companyAddress, actor);
+      const grant = typeof body.grant === "string" ? body.grant : null;
+      try {
+      const result = await runMercuryAgent({ company: companyAddress, founder: founderAddress,
         actor, grant: body.grant, teeToken: token, message: body.message,
+        requestedTool: body.requestedTool,
+        sessionId: body.sessionId, useSessions: true,
+        auditTool: (entry) => appendAgentAudit({ company: companyAddress, actor, grant,
+          event: "tool", tool: entry.tool, details: {
+            arguments: entry.arguments, result: entry.result,
+          } }),
         requestAddress: body.requestAddress, selectedPayeeId: body.selectedPayeeId,
         selectedRecipient: body.selectedRecipient, selectedAmountMicro: body.selectedAmountMicro,
-        paymentId: body.paymentId,
-        modelUrl: process.env.MERCURY_AGENT_MODEL_URL ?? process.env.MERCURY_LLM_URL ??
+        paymentId: body.paymentId, selectedPayrollRunId: body.selectedPayrollRunId,
+        selectedPayrollItems: body.selectedPayrollItems,
+        invoiceText: body.invoiceText, selectedVendorId: body.selectedVendorId,
+        vendorRegistry: process.env.MERCURY_VENDOR_REGISTRY_JSON ?
+          parseVendorRegistry(process.env.MERCURY_VENDOR_REGISTRY_JSON) : undefined,
+        reserveInvoice: databaseInvoices ? async (invoice) => databaseInvoices.reserve({
+          company: invoice.company, vendorId: invoice.vendorId, invoiceNumber: invoice.invoiceNumber,
+          agent: invoice.agent, recipient: invoice.recipient, amountMicro: invoice.amountMicro,
+          createFlow: getOrCreatePaymentFlow,
+        }) : reserveInvoiceFlow,
+        selectedX402ServiceId: body.selectedX402ServiceId, x402TaskId: body.x402TaskId,
+        allowX402Purchase: process.env.MERCURY_ENABLE_X402_AGENT === "1" && body.allowX402Purchase === true,
+        x402Registry: process.env.MERCURY_X402_SERVICES_JSON ?
+          parseX402Registry(process.env.MERCURY_X402_SERVICES_JSON) : undefined,
+        x402SignerSecret: process.env.MERCURY_ENABLE_X402_AGENT === "1" ?
+          configuredX402SignerSecret() : undefined,
+        x402RpcUrl: process.env.MERCURY_X402_RPC_URL ?? BASE_RPC,
+        modelUrl: process.env.MERCURY_AGENT_MODEL_URL ??
           "https://api.fireworks.ai/inference/v1/chat/completions",
-        modelName: process.env.MERCURY_AGENT_MODEL ?? process.env.MERCURY_LLM_MODEL ??
-          "accounts/fireworks/models/deepseek-v4p1-flash",
+        modelName: process.env.MERCURY_AGENT_MODEL ??
+          "accounts/fireworks/models/kimi-k3",
         reasoningEffort: (process.env.MERCURY_AGENT_REASONING_EFFORT ?? "low") as "low" | "high" | "max",
-        modelApiKey: process.env.MERCURY_FIREWORKS_API_KEY ?? process.env.MERCURY_LLM_API_KEY,
-        allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1" }));
+        modelApiKey: process.env.MERCURY_FIREWORKS_API_KEY ?? process.env.MERCURY_AGENT_MODEL_API_KEY,
+        allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1" });
+      if (typeof result.paymentId === "string") {
+        await persistLegacyPaymentFlow(result.paymentId, companyAddress);
+      }
+      await appendAgentAudit({ company: companyAddress, actor, grant, event: "completed",
+        details: { sessionId: result.sessionId, toolCount: (result.actions as unknown[]).length } });
+      return reply(res, 200, result);
+      } catch (error) {
+        await appendAgentAudit({ company: companyAddress, actor, grant, event: "failed",
+          details: { reason: error instanceof Error ? error.message : "Unknown error" } });
+        throw error;
+      }
+    }
+    if (req.method === "POST" && req.url === "/v1/agent/audit") {
+      if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Mercury agent is disabled" });
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const actor = await consumePersistentAssistantChallenge({ company: companyAddress, actor: body.actor,
+        challengeId: body.challengeId, signature: body.signature });
+      assertTeeTokenActor(token, actor);
+      await resolveAssistantAccess({ company: companyAddress, founder: founderAddress,
+        actor, grant: body.grant, teeToken: token });
+      const grant = typeof body.grant === "string" ? body.grant : null;
+      return reply(res, 200, { events: await listAgentAudit(companyAddress, actor, grant,
+        body.limit === undefined ? 50 : Number(body.limit)) });
     }
     if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });
@@ -778,11 +1012,14 @@ createServer(async (req, res) => {
         modelApiKey: process.env.MERCURY_LLM_API_KEY,
         allowRemoteModel: process.env.MERCURY_ALLOW_REMOTE_LLM === "1",
       });
-      const linked = reserveInvoiceFlow({
+      const linked = databaseInvoices ? await databaseInvoices.reserve({
         company: companyAddress, vendorId: String(suggestion.vendorId),
         invoiceNumber: String(suggestion.invoiceNumber), agent: String(suggestion.agent),
-        recipient: String(suggestion.recipient), amountMicro: String(suggestion.amountMicro),
-      });
+        recipient: String(suggestion.recipient), amountMicro: String(suggestion.amountMicro), createFlow: getOrCreatePaymentFlow,
+      }) : reserveInvoiceFlow({ company: companyAddress, vendorId: String(suggestion.vendorId),
+        invoiceNumber: String(suggestion.invoiceNumber), agent: String(suggestion.agent),
+        recipient: String(suggestion.recipient), amountMicro: String(suggestion.amountMicro) });
+      await persistLegacyPaymentFlow(linked.paymentId, companyAddress);
       const { requestPlan: _requestPlan, nextStep: _nextStep, ...draft } = suggestion;
       return reply(res, 200, {
         ...draft, ...linked,
@@ -823,9 +1060,9 @@ createServer(async (req, res) => {
       const derived = paymentRequestAddress(new PublicKey(companyAddress),
         new PublicKey(String(request.requester)), new BN(String(request.id)));
       if (derived.toBase58() !== requestAddress) throw new Error("Request address does not match its private identity");
-      const record = registerPayment({ paymentId: body.paymentId, company: companyAddress,
+      const record = await registerPayment({ paymentId: body.paymentId, company: companyAddress,
         request: requestAddress, requester: String(request.requester), requestId: String(request.id) });
-      return reply(res, 200, { record: reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
+      return reply(res, 200, { record: await reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
         requestStatus: request.status });
     }
     if (req.url === "/v1/payees" && (req.method === "GET" || req.method === "POST")) {
@@ -833,10 +1070,10 @@ createServer(async (req, res) => {
       if (!token) throw new Error("TEE auth token required");
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
-      if (req.method === "GET") return reply(res, 200, { payees: listPayees(companyAddress).map(({ recipientHash, ...payee }) => payee) });
+      if (req.method === "GET") return reply(res, 200, { payees: (await listPayees(companyAddress)).map(({ recipientHash, ...payee }) => payee) });
       const body = await readJson(req);
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must register a payee");
-      const { recipientHash, ...payee } = registerPayee(companyAddress, body);
+      const { recipientHash, ...payee } = await registerPayee(companyAddress, body);
       return reply(res, 200, { payee });
     }
     const deactivate = req.url?.match(/^\/v1\/payees\/([^/?]+)\/deactivate$/);
@@ -847,7 +1084,7 @@ createServer(async (req, res) => {
       if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
       const body = await readJson(req);
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must deactivate a payee");
-      const { recipientHash, ...payee } = deactivatePayee(companyAddress, deactivate[1]);
+      const { recipientHash, ...payee } = await deactivatePayee(companyAddress, deactivate[1]);
       return reply(res, 200, { payee });
     }
     if (req.method === "GET" && req.url === "/v1/compliance/audits") {
@@ -915,7 +1152,9 @@ createServer(async (req, res) => {
       });
       const body = await readJson(req, 90_000);
       verifyPayrollScheduleFounder("create", companyAddress, founderAddress, body);
-      return reply(res, 200, payrollScheduleView(createPayrollSchedule(companyAddress, body)));
+      const schedule = createPayrollSchedule(companyAddress, body);
+      await persistPayrollSchedule(schedule);
+      return reply(res, 200, payrollScheduleView(schedule));
     }
     const payrollSchedule = req.url?.match(/^\/v1\/payroll-schedules\/([^/?]+)(?:\/(launch))?$/);
     if (payrollSchedule && ["GET", "PATCH", "POST"].includes(req.method ?? "")) {
@@ -930,12 +1169,20 @@ createServer(async (req, res) => {
       const body = await readJson(req, 90_000);
       if (req.method === "PATCH" && !payrollSchedule[2]) {
         verifyPayrollScheduleFounder("update", companyAddress, founderAddress, body, payrollSchedule[1]);
-        return reply(res, 200, payrollScheduleView(updatePayrollSchedule(companyAddress, payrollSchedule[1], body)));
+        const schedule = updatePayrollSchedule(companyAddress, payrollSchedule[1], body);
+        await persistPayrollSchedule(schedule);
+        return reply(res, 200, payrollScheduleView(schedule));
       }
       if (req.method === "POST" && payrollSchedule[2] === "launch") {
         verifyPayrollScheduleFounder("launch", companyAddress, founderAddress, body, payrollSchedule[1]);
         if (asAddress(body.requester, "requester") !== founderAddress) throw new Error("Founder must launch this MVP payroll run");
-        return reply(res, 200, launchScheduledPayroll(companyAddress, payrollSchedule[1], body));
+        const launched = launchScheduledPayroll(companyAddress, payrollSchedule[1], body);
+        // A schedule creates the same immutable payroll run shape as the manual
+        // route. Persist it before returning its payment-flow links so a restart
+        // cannot make a launched cycle disappear from the run index.
+        await persistPayrollRun(getPayrollRun(launched.runId, companyAddress));
+        await Promise.all(launched.items.map((item) => persistLegacyPaymentFlow(item.paymentId, companyAddress)));
+        return reply(res, 200, launched);
       }
     }
     if (req.method === "POST" && req.url === "/v1/payroll-runs/preview") {
@@ -987,6 +1234,8 @@ createServer(async (req, res) => {
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
       const run = createPayrollRun(body.runId, companyAddress, body);
+      await persistPayrollRun(run);
+      await Promise.all(run.items.map((item) => persistLegacyPaymentFlow(item.paymentId, companyAddress)));
       return reply(res, 200, { runId: run.runId, items: run.items.map((item, index) => ({
         index, paymentId: item.paymentId, request: item.request,
         next: `/v1/payment-flows/${item.paymentId}/next`,
@@ -997,7 +1246,7 @@ createServer(async (req, res) => {
       if (!token) throw new Error("Founder TEE auth token required");
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
-      return reply(res, 200, { runs: listPayrollRuns(companyAddress).map((run) => ({
+      return reply(res, 200, { runs: (await listStoredPayrollRuns(companyAddress)).map((run) => ({
         ...run, status: `/v1/payroll-runs/${run.runId}`,
       })) });
     }
@@ -1005,13 +1254,13 @@ createServer(async (req, res) => {
     if (payrollRun && req.method === "GET" && !payrollRun[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      const run = getPayrollRun(payrollRun[1], companyAddress);
+      const run = await getStoredPayrollRun(payrollRun[1], companyAddress);
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
       const items = [];
       for (let offset = 0; offset < run.items.length; offset += 5) {
         const batch = await Promise.all(run.items.slice(offset, offset + 5).map(async (item) => {
-          const inspected = await inspectPaymentFlow(getPaymentFlow(item.paymentId, companyAddress), founderAddress, token);
+          const inspected = await inspectPaymentFlow(await getPaymentFlow(item.paymentId, companyAddress), founderAddress, token);
           const requestStatus = inspected.observation.status;
           const privateRequest = inspected.observation.privateReady && requestStatus !== "empty"
             ? await readPaymentRequest(companyAddress, item.request, token) : null;
@@ -1019,10 +1268,10 @@ createServer(async (req, res) => {
           const recipient = privateRequest ? String(privateRequest.recipient) : null;
           let payment = null;
           if (["approved", "executed", "rejected"].includes(requestStatus)) {
-            const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
+            const record = await registerPayment({ paymentId: item.paymentId, company: companyAddress,
               request: item.request, requester: item.requester, requestId: item.requestId });
             const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
-            payment = reconcilePayment(item.paymentId, companyAddress, requestStatus, chain?.status ?? null);
+            payment = await reconcilePayment(item.paymentId, companyAddress, requestStatus, chain?.status ?? null);
           }
           return { paymentId: item.paymentId, request: item.request, requestStatus, recipient, amountMicro,
             next: `/v1/payment-flows/${item.paymentId}/next`,
@@ -1040,7 +1289,7 @@ createServer(async (req, res) => {
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
-      const run = getPayrollRun(payrollRun[1], companyAddress);
+      const run = await getStoredPayrollRun(payrollRun[1], companyAddress);
       const statuses = await Promise.all(run.items.map(async (item) =>
         String((await readPaymentRequest(companyAddress, item.request, token)).status)));
       if (statuses.every((status) => status === "approved" || status === "executed")) {
@@ -1067,7 +1316,7 @@ createServer(async (req, res) => {
       endpoint.searchParams.set("token", token);
       const blockhash = (await new Connection(endpoint.toString(), "confirmed").getLatestBlockhash()).blockhash;
       const { transactionBase64, itemCount } = buildPayrollApprovalChunk({ actor, blockhash, instructions: approvals });
-      const receipt = recordOnboardingBuild({ company: companyAddress, target: run.runId,
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target: run.runId,
         operation, chain: "ephemeral", transactionBase64 });
       return reply(res, 200, { status: "build", runId: run.runId, receiptId: receipt.id,
         itemCount, remainingAfterConfirmation: pending.length - itemCount,
@@ -1078,16 +1327,16 @@ createServer(async (req, res) => {
     if (paymentFlow && req.method === "GET" && !req.url?.endsWith("/next")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const flow = getPaymentFlow(paymentFlow[1], companyAddress);
+      const flow = await getPaymentFlow(paymentFlow[1], companyAddress);
       const inspected = await inspectPaymentFlow(flow, founderAddress, token);
       const result: Record<string, unknown> = {
         paymentId: flow.paymentId, request: flow.request, requestId: flow.requestId, requester: flow.requester,
         ...inspected,
       };
       if (["approved", "executed", "rejected"].includes(inspected.observation.status)) {
-        const record = registerPayment({ paymentId: flow.paymentId, company: companyAddress,
+        const record = await registerPayment({ paymentId: flow.paymentId, company: companyAddress,
           request: flow.request, requester: flow.requester, requestId: flow.requestId });
-        result.record = reconcilePayment(record.paymentId, companyAddress, inspected.observation.status, null);
+        result.record = await reconcilePayment(record.paymentId, companyAddress, inspected.observation.status, null);
         result.paymentJob = {
           prepare: `/v1/payment-jobs/${flow.paymentId}/prepare`,
           status: `/v1/payment-jobs/${flow.paymentId}`,
@@ -1100,9 +1349,9 @@ createServer(async (req, res) => {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req);
-      if (body.payeeId !== undefined) matchPayee(companyAddress, body.payeeId, body.recipient);
-      const { flow, terms } = getOrCreatePaymentFlow(paymentFlow[1], companyAddress, body);
-      if (body.payeeId !== undefined) linkPaymentPayee(companyAddress, flow.paymentId, body.payeeId);
+      if (body.payeeId !== undefined) await matchPayee(companyAddress, body.payeeId, body.recipient);
+      const { flow, terms } = await getOrCreatePaymentFlow(paymentFlow[1], companyAddress, body);
+      if (body.payeeId !== undefined) await linkPaymentPayee(companyAddress, flow.paymentId, body.payeeId);
       const inspected = await inspectPaymentFlow(flow, founderAddress, token);
       const baseResult = {
         paymentId: flow.paymentId, request: flow.request, requestId: flow.requestId, requester: flow.requester,
@@ -1112,10 +1361,10 @@ createServer(async (req, res) => {
       if (inspected.step.status === "ready_to_execute" || inspected.step.status === "ready" ||
           inspected.step.status === "rejected") {
         const status = inspected.observation.status;
-        const record = registerPayment({ paymentId: flow.paymentId, company: companyAddress,
+        const record = await registerPayment({ paymentId: flow.paymentId, company: companyAddress,
           request: flow.request, requester: flow.requester, requestId: flow.requestId });
         return reply(res, 200, { ...baseResult,
-          record: reconcilePayment(record.paymentId, companyAddress, status, null),
+          record: await reconcilePayment(record.paymentId, companyAddress, status, null),
           paymentJob: {
             prepare: `/v1/payment-jobs/${flow.paymentId}/prepare`,
             status: `/v1/payment-jobs/${flow.paymentId}`,
@@ -1147,16 +1396,10 @@ createServer(async (req, res) => {
         }
         if ((operation === "activateRequestPrivacy" || operation === "submitPayment") &&
             flow.requester !== founderAddress) {
-          const policy = await readCompanyPolicy(companyAddress, token);
-          const financeRequester = flow.requester === policy.finance;
           const grantAddress = asAddress(body.requesterGrant, "requesterGrant");
           const grant = await readTeamGrant(companyAddress, grantAddress, token);
-          if (grant.role !== (financeRequester ? 1 : 3) || grant.member !== flow.requester ||
-              grant.grantor !== founderAddress || grant.active !== true || grant.revoked !== false ||
-              (!financeRequester && grant.scope !== PublicKey.default.toBase58() &&
-                grant.scope !== requestBranchScope(new PublicKey(companyAddress), flow.requestId).toBase58())) {
-            throw new Error("Active requester grant for this payment branch is required");
-          }
+          validateRequesterGrantForFlow({ company: companyAddress, founder: founderAddress,
+            requester: flow.requester, requestId: flow.requestId, grant });
           input.requesterGrant = grantAddress;
         }
         transaction = await buildOperation(input as { operation: string; actor: string }, {
@@ -1164,13 +1407,24 @@ createServer(async (req, res) => {
         });
       }
       const operationKey = flowReceiptOperation(flow, operation);
-      const prior = latestOnboardingReceipt(companyAddress, flow.request, operationKey);
+      let prior = latestOnboardingReceipt(companyAddress, flow.request, operationKey);
+      if (prior?.status === "built") {
+        prior = await expireUnsignedOnboardingReceipt(prior.id, companyAddress, token);
+        if (prior.status === "expired") {
+          const refreshed = await inspectPaymentFlow(flow, founderAddress, token);
+          if (refreshed.step.operation !== operation || refreshed.step.status !== inspected.step.status) {
+            return reply(res, 200, { ...baseResult, observation: refreshed.observation, step: refreshed.step });
+          }
+        }
+      } else if (prior?.status === "pending") {
+        prior = await reconcileOnboardingReceipt(prior.id, companyAddress, token);
+      }
       if (prior && (prior.status === "built" || prior.status === "pending" || prior.status === "confirmed")) {
         return reply(res, 200, { ...baseResult, step: { status: "wait", operation: null, actor: null,
           sendTo: null, reason: "Wait for the prior signed step to confirm and state to propagate" },
           receiptId: prior.id, receiptStatus: prior.status, transaction: null });
       }
-      const receipt = recordOnboardingBuild({ company: companyAddress, target: flow.request, operation: operationKey,
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target: flow.request, operation: operationKey,
         chain: transaction.sendTo, transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { ...baseResult, transaction, receiptId: receipt.id });
     }
@@ -1184,12 +1438,12 @@ createServer(async (req, res) => {
       const snapshot = await readTreasurySnapshot(companyAddress, token).catch(() => null);
       const rows = [];
       let unavailableCount = 0;
-      for (const record of listPayments(companyAddress, limit)) {
+      for (const record of await listPayments(companyAddress, limit)) {
         try {
           const request = await readPaymentRequest(companyAddress, record.request, token);
           const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
-          const updated = reconcilePayment(record.paymentId, companyAddress, String(request.status), chain?.status ?? null);
-          rows.push({ record: updated, payee: paymentPayee(companyAddress, record.paymentId),
+          const updated = await reconcilePayment(record.paymentId, companyAddress, String(request.status), chain?.status ?? null);
+          rows.push({ record: updated, payee: await paymentPayee(companyAddress, record.paymentId),
             requestStatus: request.status, chainStatus: chain?.status ?? null,
             snapshotNeedsSync: request.status === "executed" && chain?.status === "confirmed" &&
               chain.slot !== null && snapshot !== null
@@ -1215,8 +1469,9 @@ createServer(async (req, res) => {
       const limit = body.limit === undefined ? 20 : Number(body.limit);
       if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(receiptOffset) || receiptOffset < 0 ||
           !Number.isSafeInteger(limit) || limit < 1 || limit > 50) throw new Error("Invalid reconciliation page");
-      const page = paymentReconciliationPage(companyAddress, offset, limit);
+      const page = await paymentReconciliationPage(companyAddress, offset, limit);
       const snapshot = await readTreasurySnapshot(companyAddress, token).catch(() => null);
+      const invoicePaymentIds = new Set(listInvoicePaymentIds(companyAddress));
       const payments = [];
       for (const record of page.payments) {
         try {
@@ -1224,9 +1479,9 @@ createServer(async (req, res) => {
           const observation = record.signature
             ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
           const chainStatus = record.signature && observation === null ? "unavailable" : observation?.status ?? null;
-          const updated = reconcilePayment(record.paymentId, companyAddress, String(request.status), observation?.status ?? null);
-          payments.push({ paymentId: record.paymentId, request: record.request, requestStatus: request.status,
-            paymentState: updated.state, chainStatus, signature: updated.signature,
+          const updated = await reconcilePayment(record.paymentId, companyAddress, String(request.status), observation?.status ?? null);
+          payments.push({ paymentId: record.paymentId, source: invoicePaymentIds.has(record.paymentId) ? "invoice" : "payment",
+            request: record.request, requestStatus: request.status, paymentState: updated.state, chainStatus, signature: updated.signature,
             next: paymentRecoveryAction({ record: updated, requestStatus: String(request.status), chainStatus,
               executionSlot: observation?.slot ?? null, snapshotSlot: snapshot?.updatedSlot ?? null }) });
         } catch (error) {
@@ -1241,7 +1496,7 @@ createServer(async (req, res) => {
           const receipt = await reconcileOnboardingReceipt(current.id, companyAddress, token);
           if (receipt.status === "confirmed" && /^(cleanupFinanceV2:|cleanupManagerV2:|cleanupMember:)/.test(receipt.operation) &&
               receipt.target !== companyAddress) {
-            applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
+            await applyConfirmedReaderCleanup(receipt.company, receipt.target, "all");
           }
           receipts.push({ id: receipt.id, operation: receipt.operation, status: receipt.status,
             signature: receipt.signature, next: receipt.status === "built"
@@ -1266,7 +1521,7 @@ createServer(async (req, res) => {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const id = paymentId(paymentJob[1]);
-      const record = getPayment(id, companyAddress);
+      const record = await getPayment(id, companyAddress);
       const request = await readPaymentRequest(companyAddress, record.request, token);
       const observation = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
       const chainStatus = observation?.status ?? null;
@@ -1274,7 +1529,7 @@ createServer(async (req, res) => {
       const snapshotNeedsSync = request.status === "executed" && observation?.status === "confirmed" &&
         observation.slot !== null && snapshot !== null
         ? BigInt(snapshot.updatedSlot) < BigInt(observation.slot) : null;
-      return reply(res, 200, { record: reconcilePayment(id, companyAddress, String(request.status), chainStatus),
+      return reply(res, 200, { record: await reconcilePayment(id, companyAddress, String(request.status), chainStatus),
         requestStatus: request.status, chainStatus, executionSlot: observation?.slot ?? null,
         paymentSettled: request.status === "executed",
         signatureLinked: chainStatus === "confirmed" && request.status === "executed",
@@ -1289,7 +1544,7 @@ createServer(async (req, res) => {
       const body = await readJson(req);
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must sync the treasury snapshot");
       const id = paymentId(paymentJob[1]);
-      const record = getPayment(id, companyAddress);
+      const record = await getPayment(id, companyAddress);
       const [request, policy, snapshot] = await Promise.all([
         readPaymentRequest(companyAddress, record.request, token), readCompanyPolicy(companyAddress, token),
         readTreasurySnapshot(companyAddress, token),
@@ -1311,7 +1566,7 @@ createServer(async (req, res) => {
       const transaction = await buildOperation({ operation: "syncTreasurySnapshot", actor: founderAddress,
         treasuryToken: canonicalTokenAccount(companyAddress, DEVNET_USDC) },
       { company: companyAddress, founder: founderAddress, teeToken: token });
-      const receipt = recordOnboardingBuild({ company: companyAddress, target,
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target,
         operation: "paymentSnapshotSync", chain: transaction.sendTo,
         transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { status: "build", receiptId: receipt.id, transaction });
@@ -1323,10 +1578,10 @@ createServer(async (req, res) => {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const id = paymentId(paymentJob[1]);
-      const record = getPayment(id, companyAddress);
+      const record = await getPayment(id, companyAddress);
       const request = await readPaymentRequest(companyAddress, record.request, token);
       if (request.status !== "approved") return reply(res, 200, {
-        record: reconcilePayment(id, companyAddress, String(request.status), null), requestStatus: request.status,
+        record: await reconcilePayment(id, companyAddress, String(request.status), null), requestStatus: request.status,
         transaction: null,
       });
       if (record.state !== "registered" && record.state !== "failed") return reply(res, 200, {
@@ -1336,14 +1591,14 @@ createServer(async (req, res) => {
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
       const plan = await executionPlan(record.request, actor, body.grant, token);
-      const prepared = preparePayment(id, companyAddress, actor, plan.transaction.transactionBase64);
+      const prepared = await preparePayment(id, companyAddress, actor, plan.transaction.transactionBase64);
       return reply(res, 200, { record: prepared, ...plan });
     }
     if (paymentJob && req.method === "POST" && paymentJob[2] === "rebuild") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const id = paymentId(paymentJob[1]);
-      const record = getPayment(id, companyAddress);
+      const record = await getPayment(id, companyAddress);
       const request = await readPaymentRequest(companyAddress, record.request, token);
       if (request.status !== "approved") throw new Error("Payment must still be approved before rebuilding");
       if (!record.preparedBlockhash) throw new Error("Prepared blockhash is unavailable; inspect this payment manually");
@@ -1351,21 +1606,21 @@ createServer(async (req, res) => {
       endpoint.searchParams.set("token", token);
       const valid = (await new Connection(endpoint.toString(), "confirmed")
         .isBlockhashValid(record.preparedBlockhash, { commitment: "confirmed" })).value;
-      return reply(res, 200, { record: abandonPreparedPayment(id, companyAddress, valid === false),
+      return reply(res, 200, { record: await abandonPreparedPayment(id, companyAddress, valid === false),
         next: `/v1/payment-jobs/${id}/prepare` });
     }
     if (paymentJob && req.method === "POST" && paymentJob[2] === "submit") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const id = paymentId(paymentJob[1]);
-      const record = getPayment(id, companyAddress);
+      const record = await getPayment(id, companyAddress);
       await readPaymentRequest(companyAddress, record.request, token);
       const body = await readJson(req);
       if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
-      const bound = bindSignedPayment(id, companyAddress, body.signedTransactionBase64);
+      const bound = await bindSignedPayment(id, companyAddress, body.signedTransactionBase64);
       const request = await readPaymentRequest(companyAddress, record.request, token);
       if (request.status === "executed") return reply(res, 200, {
-        record: reconcilePayment(id, companyAddress, "executed", null), broadcast: "already_settled",
+        record: await reconcilePayment(id, companyAddress, "executed", null), broadcast: "already_settled",
       });
       const endpoint = new URL(TEE_RPC);
       endpoint.searchParams.set("token", token);
@@ -1388,7 +1643,7 @@ createServer(async (req, res) => {
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
-      const run = getPayrollRun(payrollRun[1], companyAddress);
+      const run = await getStoredPayrollRun(payrollRun[1], companyAddress);
       const wanted = body.paymentIds === undefined ? null : new Set(
         Array.isArray(body.paymentIds) ? body.paymentIds.map(paymentId) : (() => { throw new Error("paymentIds must be an array"); })(),
       );
@@ -1398,15 +1653,15 @@ createServer(async (req, res) => {
       const recoveries = [];
       for (const item of run.items.filter((row) => wanted === null || wanted.has(row.paymentId))) {
         const request = await readPaymentRequest(companyAddress, item.request, token);
-        const record = registerPayment({ paymentId: item.paymentId, company: companyAddress,
+        const record = await registerPayment({ paymentId: item.paymentId, company: companyAddress,
           request: item.request, requester: item.requester, requestId: item.requestId });
         const chain = record.signature ? await paymentChainObservation(record.signature, token).catch(() => null) : null;
-        const reconciled = reconcilePayment(item.paymentId, companyAddress, String(request.status), chain?.status ?? null);
+        const reconciled = await reconcilePayment(item.paymentId, companyAddress, String(request.status), chain?.status ?? null);
         if (request.status === "executed") {
           recoveries.push({ paymentId: item.paymentId, status: "settled" });
         } else if (request.status === "approved" && reconciled.state === "failed") {
           const plan = await executionPlan(item.request, actor, body.grant, token);
-          const rebuilt = preparePayment(item.paymentId, companyAddress, actor, plan.transaction.transactionBase64);
+          const rebuilt = await preparePayment(item.paymentId, companyAddress, actor, plan.transaction.transactionBase64);
           recoveries.push({ paymentId: item.paymentId, status: "build", record: rebuilt, transaction: plan.transaction });
         } else {
           recoveries.push({ paymentId: item.paymentId, status: "reconcile", requestStatus: request.status,
@@ -1563,7 +1818,8 @@ createServer(async (req, res) => {
     }
     return reply(res, 404, { error: "Not found" });
   } catch (error) {
-    return reply(res, 400, { error: error instanceof Error ? error.message : "Unknown error" });
+    return reply(res, error instanceof AgentRateLimitError ? 429 : 400,
+      { error: error instanceof Error ? error.message : "Unknown error" });
   }
 }).listen(port, host, () => {
   process.stdout.write(`Mercury backend listening on http://${host}:${port}\n`);
