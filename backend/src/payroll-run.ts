@@ -5,6 +5,7 @@ import { PublicKey } from "@solana/web3.js";
 import { asAddress, asMicroAmount } from "./magicblock.ts";
 import { getOrCreatePaymentFlow } from "./payment-flow.ts";
 import { paymentId } from "./payment-journal.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 const DEFAULT_PATH = new URL("../.state/payroll-runs.json", import.meta.url).pathname;
 const path = () => process.env.MERCURY_PAYROLL_JOURNAL ?? DEFAULT_PATH;
@@ -38,6 +39,7 @@ function saveJournal(journal: Journal): void {
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, destination);
+  mirrorCompanyJournal({ domain: "payroll-runs", journal, rowKeys: ["runs"] });
 }
 
 function itemId(runId: string, index: number): string {

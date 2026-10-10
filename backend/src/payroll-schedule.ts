@@ -5,6 +5,7 @@ import { asAddress } from "./magicblock.ts";
 import { createPayrollRun, getPayrollRun } from "./payroll-run.ts";
 import { paymentId } from "./payment-journal.ts";
 import { type EncryptedPayrollRoster, validateEncryptedPayrollRoster } from "./payroll-roster-crypto.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 export type PayrollCadence = "weekly" | "biweekly" | "monthly" | "per_employee";
 export type PayrollSchedule = {
@@ -110,6 +111,20 @@ function saveJournal(journal: Journal): void {
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, destination);
+  mirrorCompanyJournal({ domain: "payroll-schedules", journal, rowKeys: ["schedules"] });
+}
+
+/** Hydrates the synchronous scheduler cache from encrypted durable records. */
+export function hydratePayrollScheduleCache(schedules: PayrollSchedule[]): void {
+  const journal = readJournal();
+  let changed = false;
+  for (const schedule of schedules) {
+    const current = journal.schedules.find((item) => item.scheduleId === schedule.scheduleId);
+    if (!current) { journal.schedules.push(schedule); changed = true; continue; }
+    if (current.company !== schedule.company) throw new Error("Payroll schedule cache conflicts with durable schedule");
+    if (JSON.stringify(current) !== JSON.stringify(schedule)) { Object.assign(current, schedule); changed = true; }
+  }
+  if (changed) saveJournal(journal);
 }
 
 export function createPayrollSchedule(companyInput: unknown, input: Record<string, unknown>): PayrollSchedule {

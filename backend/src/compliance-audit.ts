@@ -2,6 +2,7 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID, 
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { asAddress } from "./magicblock.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 export type AuditBundle = {
   version: 1;
@@ -75,6 +76,7 @@ function saveJournal(journal: Journal): void {
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, destination);
+  mirrorCompanyJournal({ domain: "compliance-audits", journal, rowKeys: ["audits", "events"] });
 }
 
 function digest(token: string): string {
