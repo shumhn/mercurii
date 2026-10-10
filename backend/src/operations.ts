@@ -6,7 +6,7 @@ import {
   EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID,
   permissionPdaFromAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount } from "./magicblock.ts";
+import { DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, teeConnection } from "./magicblock.ts";
 
 const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
 export const PROGRAM_ID = new PublicKey(idl.address);
@@ -69,9 +69,7 @@ export function requestBranchScope(company: PublicKey, requestId: string): Publi
 
 async function readPrivateAccount<T>(address: PublicKey, name: string, teeToken: string): Promise<T> {
   if (!teeToken) throw new Error("TEE auth token required");
-  const endpoint = new URL(TEE_RPC);
-  endpoint.searchParams.set("token", teeToken);
-  const account = await new Connection(endpoint.toString(), "confirmed").getAccountInfo(address);
+  const account = await teeConnection(teeToken).getAccountInfo(address);
   if (!account || !account.owner.equals(PROGRAM_ID)) throw new Error(`Private ${name} unavailable`);
   return new anchor.BorshAccountsCoder(idl).decode(name, account.data) as T;
 }
@@ -259,9 +257,9 @@ export async function buildOperation(input: BuildInput, config: {
   const founder = pub(config.founder, "founder");
   const privateOp = privateOperations.has(input.operation);
   if (privateOp && !config.teeToken) throw new Error("TEE auth token required for private operation");
-  const endpoint = new URL(privateOp ? (config.teeRpc ?? TEE_RPC) : (config.baseRpc ?? BASE_RPC));
-  if (privateOp) endpoint.searchParams.set("token", config.teeToken!);
-  const connection = new Connection(endpoint.toString(), "confirmed");
+  const connection = privateOp
+    ? teeConnection(config.teeToken!, config.teeRpc)
+    : new Connection(config.baseRpc ?? BASE_RPC, "confirmed");
   const readOnlyWallet = {
     publicKey: actor,
     signTransaction: async () => { throw new Error("Mercury backend never signs transactions"); },

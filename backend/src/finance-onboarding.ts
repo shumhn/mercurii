@@ -3,7 +3,7 @@ import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
+import { asAddress, asMicroAmount, delegationStatus, teeConnection } from "./magicblock.ts";
 import { BASE_RPC, PROGRAM_ID, TEE_RPC, readCompanyPolicy, teamGrantAddress } from "./operations.ts";
 import type { OnboardingStep } from "./onboarding.ts";
 import { confirmedOnboardingStep } from "./onboarding-journal.ts";
@@ -73,10 +73,8 @@ export async function inspectRootFinanceGrant(args: {
     throw new Error("Grant is delegated to a different PER validator");
   }
   const delegated = route.isDelegated === true;
-  const teeUrl = new URL(TEE_RPC);
-  teeUrl.searchParams.set("token", args.teeToken);
   const base = new Connection(BASE_RPC, "confirmed");
-  const tee = new Connection(teeUrl.toString(), "confirmed");
+  const tee = teeConnection(args.teeToken);
   const [baseAccount, teeAccount, permission] = await Promise.all([
     base.getAccountInfo(grant),
     delegated ? tee.getAccountInfo(grant) : Promise.resolve(null),

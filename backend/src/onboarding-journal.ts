@@ -5,6 +5,7 @@ import { Connection, Transaction, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { TEE_RPC } from "./operations.ts";
+import { teeConnection } from "./magicblock.ts";
 import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 export type Receipt = {
@@ -128,16 +129,12 @@ export async function expireUnsignedOnboardingReceipt(id: string, company: strin
   if (receipt.status !== "built" || receipt.signature || !receipt.blockhash) return receipt;
   const created = Date.parse(receipt.createdAt);
   if (!Number.isFinite(created) || now - created < 90_000) return receipt;
-  const endpoint = new URL(receipt.chain === "base"
-    ? (process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com") : TEE_RPC);
-  if (receipt.chain === "ephemeral") {
-    if (!teeToken) throw new Error("TEE auth token required");
-    endpoint.searchParams.set("token", teeToken);
-  }
+  const connection = receipt.chain === "base"
+    ? new Connection(process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com", "confirmed")
+    : teeConnection(teeToken);
   const valid = blockhashValid
     ? await blockhashValid(receipt.chain, receipt.blockhash)
-    : (await new Connection(endpoint.toString(), "confirmed")
-      .isBlockhashValid(receipt.blockhash, { commitment: "finalized" })).value;
+    : (await connection.isBlockhashValid(receipt.blockhash, { commitment: "finalized" })).value;
   if (valid) return getOnboardingReceipt(id, company);
   const journal = readJournal();
   const latest = journal.receipts.find((item) => item.id === id && item.company === company);
@@ -200,16 +197,12 @@ export async function confirmOnboardingReceipt(id: string, signedTransactionBase
   }
   const signatureText = bs58.encode(signature);
   if (receipt.signature && receipt.signature !== signatureText) throw new Error("Receipt already has another signature");
-  const endpoint = new URL(receipt.chain === "base"
-    ? (process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com") : TEE_RPC);
-  if (receipt.chain === "ephemeral") {
-    if (!teeToken) throw new Error("TEE auth token required");
-    endpoint.searchParams.set("token", teeToken);
-  }
+  const connection = receipt.chain === "base"
+    ? new Connection(process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com", "confirmed")
+    : teeConnection(teeToken);
   const status = statusLookup
     ? await statusLookup(receipt.chain, signatureText)
-    : (await new Connection(endpoint.toString(), "confirmed")
-      .getSignatureStatuses([signatureText], { searchTransactionHistory: true })).value[0];
+    : (await connection.getSignatureStatuses([signatureText], { searchTransactionHistory: true })).value[0];
   const latestJournal = readJournal();
   const latest = latestJournal.receipts.find((item) => item.id === id);
   if (!latest) throw new Error("Unknown onboarding receipt");
@@ -231,16 +224,12 @@ export async function reconcileOnboardingReceipt(id: string, company: string, te
   const receipt = readJournal().receipts.find((item) => item.id === id && item.company === company);
   if (!receipt) throw new Error("Unknown onboarding receipt");
   if (!receipt.signature || receipt.status === "confirmed" || receipt.status === "failed") return receipt;
-  const endpoint = new URL(receipt.chain === "base"
-    ? (process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com") : TEE_RPC);
-  if (receipt.chain === "ephemeral") {
-    if (!teeToken) throw new Error("TEE auth token required");
-    endpoint.searchParams.set("token", teeToken);
-  }
+  const connection = receipt.chain === "base"
+    ? new Connection(process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com", "confirmed")
+    : teeConnection(teeToken);
   const status = statusLookup
     ? await statusLookup(receipt.chain, receipt.signature)
-    : (await new Connection(endpoint.toString(), "confirmed")
-      .getSignatureStatuses([receipt.signature], { searchTransactionHistory: true })).value[0];
+    : (await connection.getSignatureStatuses([receipt.signature], { searchTransactionHistory: true })).value[0];
   const journal = readJournal();
   const latest = journal.receipts.find((item) => item.id === id && item.company === company);
   if (!latest) throw new Error("Unknown onboarding receipt");

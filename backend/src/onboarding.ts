@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { DEVNET_USDC, asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
+import { DEVNET_USDC, asAddress, asMicroAmount, delegationStatus, teeConnection } from "./magicblock.ts";
 import { BASE_RPC, PROGRAM_ID, TEE_RPC, snapshotAddress } from "./operations.ts";
 import { confirmedOnboardingStep } from "./onboarding-journal.ts";
 
@@ -75,10 +75,8 @@ export async function inspectCompanyOnboarding(args: {
   const derivedCompany = PublicKey.findProgramAddressSync([Buffer.from("company-policy"), founder.toBuffer()], PROGRAM_ID)[0];
   if (!company.equals(derivedCompany)) throw new Error("Company does not match the Founder policy PDA");
   const snapshot = snapshotAddress(company);
-  const teeUrl = new URL(TEE_RPC);
-  teeUrl.searchParams.set("token", args.teeToken);
   const base = new Connection(BASE_RPC, "confirmed");
-  const tee = new Connection(teeUrl.toString(), "confirmed");
+  const tee = teeConnection(args.teeToken);
   const [baseCompany, baseSnapshot, companyRoute, snapshotRoute] = await Promise.all([
     base.getAccountInfo(company), base.getAccountInfo(snapshot),
     delegationStatus({ account: company.toBase58() }), delegationStatus({ account: snapshot.toBase58() }),

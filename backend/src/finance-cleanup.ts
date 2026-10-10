@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { asAddress } from "./magicblock.ts";
+import { asAddress, teeConnection } from "./magicblock.ts";
 import { PROGRAM_ID, TEE_RPC, readCompanyPolicy, readTeamGrant, snapshotAddress } from "./operations.ts";
 import { recordedRequestReaders } from "./payment-flow.ts";
 
@@ -48,9 +48,7 @@ export async function scanFinanceReaderCleanup(args: {
       grant.active !== false || grant.revoked !== true) {
     throw new Error("A revoked Founder-issued Finance grant is required before cleanup");
   }
-  const endpoint = new URL(TEE_RPC);
-  endpoint.searchParams.set("token", args.teeToken);
-  const accounts = await new Connection(endpoint.toString(), "confirmed").getProgramAccounts(PROGRAM_ID);
+  const accounts = await teeConnection(args.teeToken).getProgramAccounts(PROGRAM_ID);
   let policySeen = false;
   const targets: CleanupTarget[] = [];
   const financeOwnedRequests: string[] = [];

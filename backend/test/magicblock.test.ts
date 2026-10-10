@@ -28,8 +28,46 @@ test("private receive builder fixes the route and leaves payer signing to the cl
   assert.deepEqual(result.requiredSigners, [payer]);
 });
 
-test("rejects wrong signer and unsafe amount", async () => {
+test("private receive forwards split and delay obfuscation to the builder", async () => {
   const payer = Keypair.generate().publicKey.toBase58();
+  const company = Keypair.generate().publicKey.toBase58();
+  let sent: Record<string, unknown> = {};
+  const fakeFetch: typeof fetch = async (_url, init) => {
+    sent = JSON.parse(String(init?.body));
+    return new Response(JSON.stringify({
+      kind: "transfer", transactionBase64: "AQID", sendTo: "base", requiredSigners: [payer],
+    }), { status: 200 });
+  };
+  await preparePrivateReceive({ payer, company, amountMicro: 1_000_000,
+    privacy: { split: 4, minDelayMs: 5_000, maxDelayMs: 60_000 }, fetchImpl: fakeFetch });
+  assert.equal(sent.split, 4);
+  assert.equal(sent.minDelayMs, "5000");
+  assert.equal(sent.maxDelayMs, "60000");
+  // No privacy options: the builder receives no obfuscation fields at all.
+  await preparePrivateReceive({ payer, company, amountMicro: 1, fetchImpl: fakeFetch });
+  assert.equal("split" in sent, false);
+  assert.equal("minDelayMs" in sent, false);
+  // split of 1 is a no-op and is omitted.
+  await preparePrivateReceive({ payer, company, amountMicro: 1, privacy: { split: 1 }, fetchImpl: fakeFetch });
+  assert.equal("split" in sent, false);
+});
+
+test("privacy options are validated before any builder call", async () => {
+  const payer = Keypair.generate().publicKey.toBase58();
+  const company = Keypair.generate().publicKey.toBase58();
+  await assert.rejects(() => preparePrivateReceive({ payer, company, amountMicro: 1,
+    privacy: { split: 0 } }), /privacy\.split/);
+  await assert.rejects(() => preparePrivateReceive({ payer, company, amountMicro: 1,
+    privacy: { split: 16 } }), /privacy\.split/);
+  await assert.rejects(() => preparePrivateReceive({ payer, company, amountMicro: 1,
+    privacy: { minDelayMs: 60_000, maxDelayMs: 5_000 } }), /must not exceed/);
+  await assert.rejects(() => preparePrivateReceive({ payer, company, amountMicro: 1,
+    privacy: { maxDelayMs: -1 } }), /privacy\.maxDelayMs/);
+  await assert.rejects(() => preparePrivateReceive({ payer, company, amountMicro: 1,
+    privacy: "aggressive" }), /privacy must be an object/);
+});
+
+test("rejects wrong signer and unsafe amount", async () => {  const payer = Keypair.generate().publicKey.toBase58();
   const company = Keypair.generate().publicKey.toBase58();
   await assert.rejects(() => preparePrivateReceive({ payer, company, amountMicro: Number.MAX_SAFE_INTEGER + 1 }), /positive safe integer/);
   await assert.rejects(() => preparePrivateReceive({

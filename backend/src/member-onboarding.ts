@@ -3,7 +3,7 @@ import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { asAddress, delegationStatus } from "./magicblock.ts";
+import { asAddress, delegationStatus, teeConnection } from "./magicblock.ts";
 import { BASE_RPC, PROGRAM_ID, TEE_RPC, branchScopeAddress, readCompanyPolicy, teamGrantAddress } from "./operations.ts";
 import { confirmedOnboardingStep } from "./onboarding-journal.ts";
 import type { OnboardingStep } from "./onboarding.ts";
@@ -54,12 +54,11 @@ export async function inspectMemberGrant(args: {
     throw new Error("Member grant is delegated to a different PER validator");
   }
   const delegated = route.isDelegated === true;
-  const teeUrl = new URL(TEE_RPC);
-  teeUrl.searchParams.set("token", args.teeToken);
+  const tee = teeConnection(args.teeToken);
   const [baseAccount, teeAccount, permission] = await Promise.all([
     new Connection(BASE_RPC, "confirmed").getAccountInfo(grant),
-    delegated ? new Connection(teeUrl.toString(), "confirmed").getAccountInfo(grant) : Promise.resolve(null),
-    delegated ? new Connection(teeUrl.toString(), "confirmed").getAccountInfo(permissionPdaFromAccount(grant)) : Promise.resolve(null),
+    delegated ? tee.getAccountInfo(grant) : Promise.resolve(null),
+    delegated ? tee.getAccountInfo(permissionPdaFromAccount(grant)) : Promise.resolve(null),
   ]);
   if (!baseAccount && delegated) throw new Error("Router and base disagree about grant existence");
   const account = delegated ? teeAccount : baseAccount;

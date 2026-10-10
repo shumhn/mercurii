@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { asAddress } from "./magicblock.ts";
+import { asAddress, teeConnection } from "./magicblock.ts";
 import { recordedRequestReaders } from "./payment-flow.ts";
 import { PROGRAM_ID, TEE_RPC, readCompanyPolicy, readTeamGrant } from "./operations.ts";
 
@@ -40,9 +40,7 @@ export async function scanManagerReaderCleanup(args: {
       parent.parent !== PublicKey.default.toBase58()) {
     throw new Error("A revoked Manager grant under this company's Finance grant is required");
   }
-  const endpoint = new URL(TEE_RPC);
-  endpoint.searchParams.set("token", args.teeToken);
-  const accounts = await new Connection(endpoint.toString(), "confirmed").getProgramAccounts(PROGRAM_ID);
+  const accounts = await teeConnection(args.teeToken).getProgramAccounts(PROGRAM_ID);
   const readers = args.recordedReaders ?? recordedRequestReaders(company);
   const targets: ManagerCleanupScan["targets"] = [];
   const managerOwnedRequests: string[] = [];

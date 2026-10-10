@@ -5,7 +5,7 @@ import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { asAddress, asMicroAmount, delegationStatus } from "./magicblock.ts";
+import { asAddress, asMicroAmount, delegationStatus, teeConnection } from "./magicblock.ts";
 import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 import { BASE_RPC, PROGRAM_ID, TEE_RPC, paymentRequestAddress, requestBranchScope } from "./operations.ts";
 import { confirmedOnboardingStep } from "./onboarding-journal.ts";
@@ -201,9 +201,7 @@ export async function inspectPaymentFlow(flow: PaymentFlow, founder: string, tee
   }
   const delegated = route.isDelegated === true;
   const base = new Connection(BASE_RPC, "confirmed");
-  const endpoint = new URL(TEE_RPC);
-  endpoint.searchParams.set("token", teeToken);
-  const tee = new Connection(endpoint.toString(), "confirmed");
+  const tee = teeConnection(teeToken);
   const [baseAccount, teeAccount, permission] = await Promise.all([
     base.getAccountInfo(request), delegated ? tee.getAccountInfo(request) : Promise.resolve(null),
     delegated ? tee.getAccountInfo(permissionPdaFromAccount(request)) : Promise.resolve(null),

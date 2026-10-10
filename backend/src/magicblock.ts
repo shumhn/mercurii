@@ -24,6 +24,58 @@ export type UnsignedRecipientWithdrawal = {
   validator: string;
 };
 
+/** Optional private-transfer obfuscation: split into N sub-transfers and/or
+ *  add a random execution delay window. These weaken amount/timing correlation
+ *  on the base-layer funding leg; the payer identity remains visible. */
+export type PrivateTransferPrivacy = { minDelayMs?: number; maxDelayMs?: number; split?: number };
+
+export function asPrivacy(value: unknown): PrivateTransferPrivacy | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) throw new Error("privacy must be an object");
+  const input = value as Record<string, unknown>;
+  const result: PrivateTransferPrivacy = {};
+  for (const key of ["minDelayMs", "maxDelayMs"] as const) {
+    if (input[key] !== undefined) {
+      if (typeof input[key] !== "number" || !Number.isInteger(input[key]) ||
+          (input[key] as number) < 0 || (input[key] as number) > 3_600_000) {
+        throw new Error(`privacy.${key} must be an integer from 0 to 3600000`);
+      }
+      result[key] = input[key] as number;
+    }
+  }
+  if (result.minDelayMs !== undefined && result.maxDelayMs !== undefined &&
+      result.minDelayMs > result.maxDelayMs) {
+    throw new Error("privacy.minDelayMs must not exceed privacy.maxDelayMs");
+  }
+  if (input.split !== undefined) {
+    if (typeof input.split !== "number" || !Number.isInteger(input.split) ||
+        input.split < 1 || input.split > 15) {
+      throw new Error("privacy.split must be an integer from 1 to 15");
+    }
+    result.split = input.split;
+  }
+  return result;
+}
+
+/**
+ * TEE-authenticated connection. The auth token travels in the Authorization
+ * header, NOT the URL query string: query params land in RPC/proxy access
+ * logs, and a logged token is a read key to private PER state. The validator
+ * accepts both (verified against devnet-tee); MERCURY_TEE_AUTH_MODE=query is
+ * an instant rollback switch if a validator ever rejects header auth.
+ */
+export function teeConnection(teeToken: string, teeRpc?: string): Connection {
+  if (!teeToken) throw new Error("TEE auth token required");
+  const url = teeRpc ?? DEFAULT_TEE_RPC;
+  if ((process.env.MERCURY_TEE_AUTH_MODE ?? "header") === "query") {
+    const endpoint = new URL(url);
+    endpoint.searchParams.set("token", teeToken);
+    return new Connection(endpoint.toString(), "confirmed");
+  }
+  return new Connection(url, { commitment: "confirmed",
+    httpHeaders: { authorization: `Bearer ${teeToken}` } });
+}
+
 export function asAddress(value: unknown, label: string): string {
   if (typeof value !== "string") throw new Error(`${label} must be a Solana address`);
   try {
@@ -57,6 +109,7 @@ export async function preparePrivateReceive(args: {
   paymentsUrl?: string;
   cluster?: string;
   expectedValidator?: string;
+  privacy?: unknown;
 }): Promise<UnsignedPrivateReceive> {
   const payer = asAddress(args.payer, "payer");
   const company = asAddress(args.company, "company");
@@ -72,6 +125,7 @@ export async function prepareRecipientOnboarding(args: {
   paymentsUrl?: string;
   cluster?: string;
   expectedValidator?: string;
+  privacy?: unknown;
 }): Promise<UnsignedPrivateReceive> {
   const payer = asAddress(args.payer, "payer");
   const recipient = asAddress(args.recipient, "recipient");
@@ -90,11 +144,13 @@ async function buildPrivateDeposit(args: {
   paymentsUrl?: string;
   cluster?: string;
   expectedValidator?: string;
+  privacy?: unknown;
 }): Promise<UnsignedPrivateReceive> {
   const { payer, destination } = args;
   const amount = asMicroAmount(args.amountMicro);
   const mint = DEVNET_USDC;
   const cluster = args.cluster ?? "devnet-private";
+  const privacy = asPrivacy(args.privacy);
   const endpoint = new URL("/v1/spl/transfer", args.paymentsUrl ?? DEFAULT_PAYMENTS_URL);
   const response = await (args.fetchImpl ?? fetch)(endpoint, {
     method: "POST",
@@ -112,6 +168,9 @@ async function buildPrivateDeposit(args: {
       toBalance: "ephemeral",
       cluster,
       ...(args.expectedValidator ? { validator: asAddress(args.expectedValidator, "expectedValidator") } : {}),
+      ...(privacy?.minDelayMs !== undefined ? { minDelayMs: String(privacy.minDelayMs) } : {}),
+      ...(privacy?.maxDelayMs !== undefined ? { maxDelayMs: String(privacy.maxDelayMs) } : {}),
+      ...(privacy?.split !== undefined && privacy.split > 1 ? { split: privacy.split } : {}),
       initIfMissing: true,
       initAtasIfMissing: true,
       initVaultIfMissing: true,
@@ -212,9 +271,7 @@ export async function readRecipientBalance(args: {
   const mint = new PublicKey(asAddress(args.mint, "mint"));
   if (!args.teeToken) throw new Error("TEE auth token required");
   const tokenAccount = new PublicKey(canonicalTokenAccount(owner.toBase58(), mint.toBase58()));
-  const endpoint = new URL(args.teeRpc ?? DEFAULT_TEE_RPC);
-  endpoint.searchParams.set("token", args.teeToken);
-  const account = await new Connection(endpoint.toString(), "confirmed").getAccountInfo(tokenAccount);
+  const account = await teeConnection(args.teeToken, args.teeRpc).getAccountInfo(tokenAccount);
   if (!account || !account.owner.equals(TOKEN_PROGRAM_ID) || account.data.length < 72) {
     throw new Error("Private recipient token balance unavailable");
   }

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey } from "@solana/web3.js";
-import { asAddress } from "./magicblock.ts";
+import { asAddress, teeConnection } from "./magicblock.ts";
 import { PROGRAM_ID, TEE_RPC, readCompanyPolicy, readTeamGrant } from "./operations.ts";
 
 const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
@@ -20,9 +20,7 @@ export async function listTeamMembers(companyInput: unknown, teeToken: string): 
   if (!teeToken) throw new Error("TEE auth token required");
   const company = asAddress(companyInput, "company");
   await readCompanyPolicy(company, teeToken);
-  const endpoint = new URL(TEE_RPC);
-  endpoint.searchParams.set("token", teeToken);
-  const accounts = await new Connection(endpoint.toString(), "confirmed").getProgramAccounts(PROGRAM_ID);
+  const accounts = await teeConnection(teeToken).getProgramAccounts(PROGRAM_ID);
   if (!accounts.some(({ pubkey }) => pubkey.toBase58() === company)) {
     throw new Error("PER scan did not include the company policy; member list may be incomplete");
   }
