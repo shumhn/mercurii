@@ -52,13 +52,17 @@ import { DatabasePayrollRunStore } from "./database-payroll-store.ts";
 import { DatabasePayrollScheduleStore } from "./database-payroll-schedule-store.ts";
 import { DatabaseOnboardingReceiptStore } from "./database-onboarding-receipt-store.ts";
 import { SupabasePrivateStore } from "./supabase-private-store.ts";
+import { requestedCompanySelector, resolveCompany, verifyAndRegisterCompany,
+  type CompanyContext } from "./company-registry.ts";
+import { completeTeeLogin, createTeeLoginChallenge } from "./tee-login.ts";
+import { requireFounderPolicy } from "./founder-access.ts";
 import { applyConfirmedReaderCleanup as applyLocalConfirmedReaderCleanup, flowReceiptOperation,
   getOrCreatePaymentFlow as getOrCreateLocalPaymentFlow,
   getPaymentFlow as getLocalPaymentFlow, inspectPaymentFlow,
   recordedRequestReaders as recordedLocalPaymentFlowReaders, validateRequesterGrantForFlow } from "./payment-flow.ts";
 import {
   DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
-  prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance,
+  prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance, teeConnection,
 } from "./magicblock.ts";
 import {
   BASE_RPC, PROGRAM_ID, TEE_RPC, TEE_VALIDATOR, agentPaymentAccounts, buildOperation,
@@ -66,8 +70,18 @@ import {
   readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTeamGrant, readTreasurySnapshot,
 } from "./operations.ts";
 
-const companyAddress = asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_COMPANY_ADDRESS");
-const founderAddress = asAddress(process.env.MERCURY_FOUNDER_ADDRESS, "MERCURY_FOUNDER_ADDRESS");
+// Multi-company: the env pair is only the default company. Each request names
+// its company (x-mercury-company header, body.company, or ?company=) and the
+// registry resolves the founder it may act for. Module-level names stay for
+// the default context; request handlers use the shadowed per-request values.
+const defaultCompanyAddress = process.env.MERCURY_COMPANY_ADDRESS ?
+  asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_COMPANY_ADDRESS") : null;
+const defaultFounderAddress = process.env.MERCURY_FOUNDER_ADDRESS ?
+  asAddress(process.env.MERCURY_FOUNDER_ADDRESS, "MERCURY_FOUNDER_ADDRESS") : null;
+if (defaultCompanyAddress === null && defaultFounderAddress !== null ||
+    defaultCompanyAddress !== null && defaultFounderAddress === null) {
+  throw new Error("Set both MERCURY_COMPANY_ADDRESS and MERCURY_FOUNDER_ADDRESS, or neither");
+}
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? "8787");
 const databasePayments = DatabasePaymentStore.fromEnvironment();
@@ -176,11 +190,25 @@ async function persistPayrollSchedule(schedule: ReturnType<typeof getPayrollSche
 // inspectors. Supabase is hydrated first and receives every new receipt and
 // state change before the HTTP request returns, so a restart recovers the
 // guided-flow state without relying on the old journal as its source.
-if (databaseOnboardingReceipts) {
-  hydrateOnboardingReceiptCache(await databaseOnboardingReceipts.list(companyAddress));
-}
-if (databasePayrollSchedules) {
-  hydratePayrollScheduleCache(await databasePayrollSchedules.list(companyAddress));
+// Hydration is per company and lazy: the first request for a company loads
+// its caches, so one process can serve many registered companies.
+const hydrationByCompany = new Map<string, Promise<void>>();
+async function ensureCompanyHydrated(company: string): Promise<void> {
+  const existing = hydrationByCompany.get(company);
+  if (existing) return existing;
+  const hydration = (async () => {
+    if (databaseOnboardingReceipts) {
+      hydrateOnboardingReceiptCache(await databaseOnboardingReceipts.list(company));
+    }
+    if (databasePayrollSchedules) {
+      hydratePayrollScheduleCache(await databasePayrollSchedules.list(company));
+    }
+  })();
+  hydrationByCompany.set(company, hydration);
+  try { await hydration; } catch (error) {
+    hydrationByCompany.delete(company);
+    throw error;
+  }
 }
 async function recordOnboardingBuild(args: Parameters<typeof recordLocalOnboardingBuild>[0]) {
   const receipt = recordLocalOnboardingBuild(args);
@@ -230,7 +258,8 @@ function optionalAuditTime(value: unknown, name: string): string | null {
   return value;
 }
 
-async function buildAuditBundle(body: Record<string, unknown>, token: string): Promise<AuditBundle> {
+async function buildAuditBundle(ctx: CompanyContext, body: Record<string, unknown>, token: string): Promise<AuditBundle> {
+  const companyAddress = ctx.company;
   const from = optionalAuditTime(body.from, "from");
   const to = optionalAuditTime(body.to, "to");
   if (from && to && Date.parse(from) > Date.parse(to)) throw new Error("Audit period ends before it starts");
@@ -286,8 +315,10 @@ function matchesAgentApiKey(header: string | undefined): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-async function nextTeamReaderCleanup(grant: string, role: number, parentGrant: string,
+async function nextTeamReaderCleanup(ctx: CompanyContext, grant: string, role: number, parentGrant: string,
   token: string): Promise<Record<string, unknown>> {
+  const companyAddress = ctx.company;
+  const founderAddress = ctx.founder;
   let targets: Array<{ address: string; kind: "request" | "snapshot" | "agent" }>;
   let operationKey: string;
   if (role === 1) {
@@ -335,23 +366,43 @@ async function nextTeamReaderCleanup(grant: string, role: number, parentGrant: s
     note: "All discovered private readers were reset; verify revoked-wallet read denial." };
 }
 
-async function readJson(req: IncomingMessage, maxBytes = 16_384): Promise<Record<string, unknown>> {
+// The body is parsed once per request and memoized: the handler reads it to
+// resolve the company context before routing, and individual routes re-read
+// the cached value. Per-route size caps still apply to the cached length.
+const MAX_REQUEST_BYTES = 131_072;
+const requestBodies = new WeakMap<IncomingMessage, Promise<{ bytes: number; json: Record<string, unknown> }>>();
+
+async function readRequestBody(req: IncomingMessage): Promise<{ bytes: number; json: Record<string, unknown> }> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
     const buf = Buffer.from(chunk);
     size += buf.length;
-    if (size > maxBytes) throw new Error("Request too large");
+    if (size > MAX_REQUEST_BYTES) throw new Error("Request too large");
     chunks.push(buf);
   }
   const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error("Expected JSON object");
   }
-  return parsed as Record<string, unknown>;
+  return { bytes: size, json: parsed as Record<string, unknown> };
 }
 
-async function executionPlan(requestAddress: string, actor: string, grantInput: unknown, token: string) {
+async function readJson(req: IncomingMessage, maxBytes = 16_384): Promise<Record<string, unknown>> {
+  let cached = requestBodies.get(req);
+  if (!cached) {
+    cached = readRequestBody(req);
+    requestBodies.set(req, cached);
+  }
+  const { bytes, json } = await cached;
+  if (bytes > maxBytes) throw new Error("Request too large");
+  return json;
+}
+
+async function executionPlan(ctx: CompanyContext, requestAddress: string, actor: string,
+  grantInput: unknown, token: string) {
+  const companyAddress = ctx.company;
+  const founderAddress = ctx.founder;
   const [policy, request, snapshot] = await Promise.all([
     readCompanyPolicy(companyAddress, token), readPaymentRequest(companyAddress, requestAddress, token),
     readTreasurySnapshot(companyAddress, token).catch(() => null),
@@ -385,8 +436,10 @@ async function executionPlan(requestAddress: string, actor: string, grantInput: 
   };
 }
 
-async function approvalPlan(requestAddress: string, actor: string, grantInput: unknown, parentGrantInput: unknown,
-  token: string) {
+async function approvalPlan(ctx: CompanyContext, requestAddress: string, actor: string, grantInput: unknown,
+  parentGrantInput: unknown, token: string) {
+  const companyAddress = ctx.company;
+  const founderAddress = ctx.founder;
   const [policy, request] = await Promise.all([
     readCompanyPolicy(companyAddress, token), readPaymentRequest(companyAddress, requestAddress, token),
   ]);
@@ -433,9 +486,7 @@ async function approvalPlan(requestAddress: string, actor: string, grantInput: u
 async function paymentChainObservation(signature: string, token: string): Promise<{
   status: "not_found" | "processed" | "confirmed" | "failed"; slot: number | null;
 }> {
-  const endpoint = new URL(TEE_RPC);
-  endpoint.searchParams.set("token", token);
-  const status = (await new Connection(endpoint.toString(), "confirmed")
+  const status = (await teeConnection(token)
     .getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
   return { status: status === null ? "not_found" : status.err ? "failed" :
     status.confirmationStatus === "confirmed" || status.confirmationStatus === "finalized" ? "confirmed" : "processed",
@@ -445,12 +496,43 @@ async function paymentChainObservation(signature: string, token: string): Promis
 createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
-      return reply(res, 200, { ok: true, companyAddress, programId: PROGRAM_ID.toBase58() });
+      return reply(res, 200, { ok: true, companyAddress: defaultCompanyAddress,
+        multiCompany: true, programId: PROGRAM_ID.toBase58() });
     }
-    if (req.method === "POST" && req.url === "/v1/onboarding/next") {
+    if (req.method === "POST" && req.url === "/v1/companies/register") {
+      const body = await readJson(req);
+      const context = await verifyAndRegisterCompany({ company: body.company, founder: body.founder });
+      return reply(res, 200, { status: "registered", ...context,
+        note: "On-chain shell verified against the founder-derived policy PDA. Private operations still require TEE access." });
+    }
+    // Resolve the per-request company before any route runs. Every route below
+    // sees the shadowed companyAddress/founderAddress for THIS company only.
+    const requestUrl = new URL(req.url ?? "/", "http://mercury.local");
+    const routePath = requestUrl.pathname;
+    const parsedBody = req.method === "POST" || req.method === "PATCH" ?
+      await readJson(req, MAX_REQUEST_BYTES) : null;
+    const companyContext = await resolveCompany(requestedCompanySelector({
+      header: req.headers["x-mercury-company"] as string | undefined,
+      body: parsedBody?.company,
+      query: requestUrl.searchParams.get("company"),
+    }));
+    const companyAddress = companyContext.company;
+    const founderAddress = companyContext.founder;
+    await ensureCompanyHydrated(companyAddress);
+    if (req.method === "POST" && routePath === "/v1/auth/tee-login/challenge") {
+      return reply(res, 200, { ...await createTeeLoginChallenge({ wallet: parsedBody!.wallet }),
+        company: companyAddress });
+    }
+    if (req.method === "POST" && routePath === "/v1/auth/tee-login") {
+      const session = await completeTeeLogin({ wallet: parsedBody!.wallet, challenge: parsedBody!.challenge,
+        signature: parsedBody!.signature });
+      return reply(res, 200, { ...session, company: companyAddress,
+        note: "This token reads only what the PER allows for this wallet. It grants no company authority by itself." });
+    }
+    if (req.method === "POST" && routePath === "/v1/onboarding/next") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      if (process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+      if (companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Onboarding currently requires a Circle devnet USDC company" });
       }
       const body = await readJson(req);
@@ -458,14 +540,14 @@ createServer(async (req, res) => {
       if (actor !== founderAddress) throw new Error("Founder must run company onboarding");
       const result = await inspectCompanyOnboarding({
         company: companyAddress, founder: founderAddress, finance: body.finance,
-        mint: process.env.MERCURY_COMPANY_MINT,
+        mint: companyContext.mint,
         monthlyLimitMicro: body.monthlyLimitMicro, agentCapMicro: body.agentCapMicro,
         teeToken: token,
       });
       if (result.next.status !== "build") return reply(res, 200, result);
       const input: Record<string, unknown> = {
         operation: result.next.operation, actor,
-        finance: body.finance, mint: process.env.MERCURY_COMPANY_MINT,
+        finance: body.finance, mint: companyContext.mint,
         monthlyLimitMicro: body.monthlyLimitMicro, agentCapMicro: body.agentCapMicro,
       };
       const transaction = await buildOperation(input as { operation: string; actor: string }, {
@@ -478,7 +560,7 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
-    if (req.method === "POST" && req.url === "/v1/onboarding/finance-grant/next") {
+    if (req.method === "POST" && routePath === "/v1/onboarding/finance-grant/next") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -504,7 +586,7 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
-    if (req.method === "POST" && req.url === "/v1/onboarding/manager-grant/next") {
+    if (req.method === "POST" && routePath === "/v1/onboarding/manager-grant/next") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Finance TEE auth token required");
       const body = await readJson(req);
@@ -530,7 +612,7 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
-    if (req.method === "POST" && req.url === "/v1/onboarding/member-grant/next") {
+    if (req.method === "POST" && routePath === "/v1/onboarding/member-grant/next") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -548,14 +630,14 @@ createServer(async (req, res) => {
         transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
-    if (req.method === "GET" && req.url === "/v1/team-members") {
+    if (req.method === "GET" && routePath === "/v1/team-members") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const members = await listTeamMembers(companyAddress, token);
       cacheTeamDirectory(companyAddress, members);
       return reply(res, 200, { members });
     }
-    const revokeGrantRoute = req.url?.match(/^\/v1\/team-grants\/([^/?]+)\/revoke\/next$/);
+    const revokeGrantRoute = routePath?.match(/^\/v1\/team-grants\/([^/?]+)\/revoke\/next$/);
     if (req.method === "POST" && revokeGrantRoute) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -578,7 +660,7 @@ createServer(async (req, res) => {
         ? { actor: founderAddress, grant: grantAddress, parentGrant: grant.parent }
         : { actor: founderAddress, grant: grantAddress };
       if (grant.revoked === true && grant.active === false) {
-        return reply(res, 200, await nextTeamReaderCleanup(grantAddress, Number(grant.role),
+        return reply(res, 200, await nextTeamReaderCleanup(companyContext, grantAddress, Number(grant.role),
           String(grant.parent), token));
       }
       if (grant.active !== true || grant.revoked !== false) throw new Error("Grant is not active");
@@ -600,10 +682,10 @@ createServer(async (req, res) => {
         receiptId: receipt.id, transaction, next: `/v1/team-grants/${grantAddress}/revoke/next`,
         cleanup: { endpoint: cleanup, body: cleanupBody } });
     }
-    if (req.method === "POST" && req.url?.startsWith("/v1/onboarding/receipts/") && req.url.endsWith("/confirm")) {
+    if (req.method === "POST" && routePath?.startsWith("/v1/onboarding/receipts/") && routePath.endsWith("/confirm")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      const id = req.url.slice("/v1/onboarding/receipts/".length, -"/confirm".length);
+      const id = routePath.slice("/v1/onboarding/receipts/".length, -"/confirm".length);
       const body = await readJson(req);
       if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
       getOnboardingReceipt(id, companyAddress);
@@ -620,10 +702,10 @@ createServer(async (req, res) => {
       }
       return reply(res, 200, receipt);
     }
-    if (req.method === "POST" && req.url?.startsWith("/v1/onboarding/receipts/") && req.url.endsWith("/reconcile")) {
+    if (req.method === "POST" && routePath?.startsWith("/v1/onboarding/receipts/") && routePath.endsWith("/reconcile")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const id = req.url.slice("/v1/onboarding/receipts/".length, -"/reconcile".length);
+      const id = routePath.slice("/v1/onboarding/receipts/".length, -"/reconcile".length);
       const body = await readJson(req);
       getOnboardingReceipt(id, companyAddress);
       const receipt = typeof body.signedTransactionBase64 === "string"
@@ -637,8 +719,8 @@ createServer(async (req, res) => {
         : receipt.status === "pending" ? "wait_and_reconcile_same_signature"
         : receipt.status === "confirmed" ? "continue_guided_flow" : "inspect_target_before_rebuilding" });
     }
-    if (req.method === "POST" && req.url === "/v1/onboarding/recipient/next") {
-      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+    if (req.method === "POST" && routePath === "/v1/onboarding/recipient/next") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Recipient onboarding requires the verified Circle devnet USDC receive flow" });
       }
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -662,8 +744,8 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, { ...result, receiptId: receipt.id });
     }
-    if (req.method === "POST" && req.url === "/v1/onboarding/company-funding/next") {
-      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+    if (req.method === "POST" && routePath === "/v1/onboarding/company-funding/next") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Treasury funding requires the verified Circle devnet USDC receive flow" });
       }
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -697,6 +779,7 @@ createServer(async (req, res) => {
           payer, company: companyAddress, amountMicro, teeToken: token,
           cluster: process.env.MAGICBLOCK_CLUSTER ?? "devnet-private",
           expectedValidator: TEE_VALIDATOR.toBase58(),
+          privacy: body.privacy,
         });
         const receipt = await recordOnboardingBuild({
           company: companyAddress, target, operation: "privateReceive",
@@ -716,7 +799,7 @@ createServer(async (req, res) => {
       return reply(res, 200, { status: next, observedBalanceMicro: snapshot?.balanceMicro ?? null,
         receiptId: receipt.id, transaction });
     }
-    if (req.method === "POST" && req.url === "/v1/access/finance-revocation-cleanup/plan") {
+    if (req.method === "POST" && routePath === "/v1/access/finance-revocation-cleanup/plan") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -763,7 +846,7 @@ createServer(async (req, res) => {
         },
       });
     }
-    if (req.method === "POST" && req.url === "/v1/access/manager-revocation-cleanup/plan") {
+    if (req.method === "POST" && routePath === "/v1/access/manager-revocation-cleanup/plan") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -805,7 +888,7 @@ createServer(async (req, res) => {
           historicalResetRequests: scan.historicalResetRequests },
       });
     }
-    if (req.method === "POST" && req.url === "/v1/access/member-revocation-cleanup/plan") {
+    if (req.method === "POST" && routePath === "/v1/access/member-revocation-cleanup/plan") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -839,7 +922,7 @@ createServer(async (req, res) => {
       return reply(res, 200, { status: confirmedCount === scan.targets.length ? "ready" : "cleanup_required",
         ...scan, totalTargets: scan.targets.length, confirmedCount, pending });
     }
-    if (req.method === "POST" && req.url === "/v1/access/request-viewer/build") {
+    if (req.method === "POST" && routePath === "/v1/access/request-viewer/build") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -882,7 +965,7 @@ createServer(async (req, res) => {
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
       return reply(res, 200, { status: "unsigned", request: requestAddress, viewer, transaction });
     }
-    if (req.method === "POST" && req.url === "/v1/access/policy-readers/restore/build") {
+    if (req.method === "POST" && routePath === "/v1/access/policy-readers/restore/build") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -900,13 +983,13 @@ createServer(async (req, res) => {
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
       return reply(res, 200, { status: "unsigned", grant: grantAddress, transaction });
     }
-    if (req.method === "POST" && req.url === "/v1/assistant/challenge") {
+    if (req.method === "POST" && routePath === "/v1/assistant/challenge") {
       if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Finance assistant is disabled" });
       const body = await readJson(req);
       return reply(res, 200, await createPersistentAssistantChallenge(companyAddress, body.actor,
         Date.now(), x402PurchaseIntent(body)));
     }
-    if (req.method === "POST" && req.url === "/v1/assistant/query") {
+    if (req.method === "POST" && routePath === "/v1/assistant/query") {
       if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Finance assistant is disabled" });
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -923,7 +1006,7 @@ createServer(async (req, res) => {
       return reply(res, 200, await answerAssistantQuestion({ company: companyAddress, access, teeToken: token,
         intent, requestAddress: body.requestAddress }));
     }
-    if (req.method === "POST" && req.url === "/v1/agent/chat") {
+    if (req.method === "POST" && routePath === "/v1/agent/chat") {
       if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Mercury agent is disabled" });
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -981,7 +1064,7 @@ createServer(async (req, res) => {
         throw error;
       }
     }
-    if (req.method === "POST" && req.url === "/v1/agent/audit") {
+    if (req.method === "POST" && routePath === "/v1/agent/audit") {
       if (process.env.MERCURY_ENABLE_FINANCE_ASSISTANT !== "1") return reply(res, 503, { error: "Mercury agent is disabled" });
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -995,10 +1078,10 @@ createServer(async (req, res) => {
       return reply(res, 200, { events: await listAgentAudit(companyAddress, actor, grant,
         body.limit === undefined ? 50 : Number(body.limit)) });
     }
-    if (req.method === "POST" && req.url === "/v1/agent/invoice-suggestions") {
+    if (req.method === "POST" && routePath === "/v1/agent/invoice-suggestions") {
       if (process.env.MERCURY_ENABLE_INVOICE_AGENT !== "1") return reply(res, 503, { error: "Invoice agent is disabled" });
       if (!matchesAgentApiKey(req.headers.authorization)) return reply(res, 401, { error: "Agent API key required" });
-      if (process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) throw new Error("Invoice agent requires the Circle devnet USDC company");
+      if (companyContext.mint !== DEVNET_USDC) throw new Error("Invoice agent requires the Circle devnet USDC company");
       const body = await readJson(req);
       const suggestion = await suggestInvoicePayment({
         invoiceText: body.invoiceText,
@@ -1031,27 +1114,27 @@ createServer(async (req, res) => {
         nextStep: "Review the draft. The Agent needs a Founder-issued Requester grant and signs request steps; Founder activates privacy; Founder or Finance approves and executes the private payment.",
       });
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/delegation/")) {
-      const account = decodeURIComponent(req.url.slice("/v1/delegation/".length));
+    if (req.method === "GET" && routePath?.startsWith("/v1/delegation/")) {
+      const account = decodeURIComponent(routePath.slice("/v1/delegation/".length));
       return reply(res, 200, { account, status: await delegationStatus({ account }) });
     }
-    if (req.method === "GET" && req.url === "/v1/treasury-snapshot") {
+    if (req.method === "GET" && routePath === "/v1/treasury-snapshot") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       return reply(res, 200, await readTreasurySnapshot(companyAddress, token));
     }
-    if (req.method === "GET" && req.url === "/v1/company-policy") {
+    if (req.method === "GET" && routePath === "/v1/company-policy") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       return reply(res, 200, await readCompanyPolicy(companyAddress, token));
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/payment-requests/")) {
+    if (req.method === "GET" && routePath?.startsWith("/v1/payment-requests/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const request = decodeURIComponent(req.url.slice("/v1/payment-requests/".length));
+      const request = decodeURIComponent(routePath.slice("/v1/payment-requests/".length));
       return reply(res, 200, await readPaymentRequest(companyAddress, request, token));
     }
-    if (req.method === "POST" && req.url === "/v1/payment-jobs") {
+    if (req.method === "POST" && routePath === "/v1/payment-jobs") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req);
@@ -1065,48 +1148,49 @@ createServer(async (req, res) => {
       return reply(res, 200, { record: await reconcilePayment(record.paymentId, companyAddress, String(request.status), null),
         requestStatus: request.status });
     }
-    if (req.url === "/v1/payees" && (req.method === "GET" || req.method === "POST")) {
+    if (routePath === "/v1/payees" && (req.method === "GET" || req.method === "POST")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
-      if (req.method === "GET") return reply(res, 200, { payees: (await listPayees(companyAddress)).map(({ recipientHash, ...payee }) => payee) });
+      if (req.method === "GET") {
+        const policy = await readCompanyPolicy(companyAddress, token);
+        if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+        return reply(res, 200, { payees: (await listPayees(companyAddress)).map(({ recipientHash, ...payee }) => payee) });
+      }
       const body = await readJson(req);
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must register a payee");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
       const { recipientHash, ...payee } = await registerPayee(companyAddress, body);
       return reply(res, 200, { payee });
     }
-    const deactivate = req.url?.match(/^\/v1\/payees\/([^/?]+)\/deactivate$/);
+    const deactivate = routePath?.match(/^\/v1\/payees\/([^/?]+)\/deactivate$/);
     if (deactivate && req.method === "POST") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
       const body = await readJson(req);
       if (asAddress(body.actor, "actor") !== founderAddress) throw new Error("Founder must deactivate a payee");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
       const { recipientHash, ...payee } = await deactivatePayee(companyAddress, deactivate[1]);
       return reply(res, 200, { payee });
     }
-    if (req.method === "GET" && req.url === "/v1/compliance/audits") {
+    if (req.method === "GET" && routePath === "/v1/compliance/audits") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Only the Founder can view audit links");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
       return reply(res, 200, { audits: listAuditShares(companyAddress) });
     }
-    if (req.method === "POST" && req.url === "/v1/compliance/audits") {
+    if (req.method === "POST" && routePath === "/v1/compliance/audits") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
       if (actor !== founderAddress) throw new Error("Founder must create auditor access");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      const policy = await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
+      if (policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
       const expiresInDays = body.expiresInDays === undefined ? 30 : body.expiresInDays;
       if (!Number.isInteger(expiresInDays) || Number(expiresInDays) < 1 || Number(expiresInDays) > 365) {
         throw new Error("expiresInDays must be an integer from 1 to 365");
       }
-      const bundle = await buildAuditBundle(body, token);
+      const bundle = await buildAuditBundle(companyContext, body, token);
       const created = createAuditShare({ company: companyAddress, label: body.label,
         expiresAt: new Date(Date.now() + Number(expiresInDays) * 86_400_000).toISOString(),
         period: { from: bundle.period.from, to: bundle.period.to }, actor, bundle });
@@ -1117,16 +1201,15 @@ createServer(async (req, res) => {
         note: "The auditor can read this frozen payroll snapshot only. It cannot execute payments or read the live treasury.",
       } });
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/compliance/audit-events")) {
+    if (req.method === "GET" && routePath?.startsWith("/v1/compliance/audit-events")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Only the Founder can view audit activity");
-      const url = new URL(req.url, "http://mercury.local");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
+      const url = requestUrl;
       const auditId = url.searchParams.get("auditId") ?? undefined;
       return reply(res, 200, { events: listAuditEvents(companyAddress, auditId) });
     }
-    const complianceAudit = req.url?.match(/^\/v1\/compliance\/audits\/([^/?]+)(?:\/(revoke))?$/);
+    const complianceAudit = routePath?.match(/^\/v1\/compliance\/audits\/([^/?]+)(?:\/(revoke))?$/);
     if (complianceAudit && req.method === "GET" && !complianceAudit[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Auditor token required");
@@ -1138,11 +1221,10 @@ createServer(async (req, res) => {
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
       if (actor !== founderAddress) throw new Error("Founder must revoke auditor access");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Only the Founder can revoke auditor access");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
       return reply(res, 200, { audit: revokeAuditShare(companyAddress, complianceAudit[1], actor) });
     }
-    if (req.url === "/v1/payroll-schedules" && (req.method === "GET" || req.method === "POST")) {
+    if (routePath === "/v1/payroll-schedules" && (req.method === "GET" || req.method === "POST")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const policy = await readCompanyPolicy(companyAddress, token);
@@ -1156,7 +1238,7 @@ createServer(async (req, res) => {
       await persistPayrollSchedule(schedule);
       return reply(res, 200, payrollScheduleView(schedule));
     }
-    const payrollSchedule = req.url?.match(/^\/v1\/payroll-schedules\/([^/?]+)(?:\/(launch))?$/);
+    const payrollSchedule = routePath?.match(/^\/v1\/payroll-schedules\/([^/?]+)(?:\/(launch))?$/);
     if (payrollSchedule && ["GET", "PATCH", "POST"].includes(req.method ?? "")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -1185,7 +1267,7 @@ createServer(async (req, res) => {
         return reply(res, 200, launched);
       }
     }
-    if (req.method === "POST" && req.url === "/v1/payroll-runs/preview") {
+    if (req.method === "POST" && routePath === "/v1/payroll-runs/preview") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req, 70_000);
@@ -1204,7 +1286,7 @@ createServer(async (req, res) => {
         snapshotUpdatedSlot: snapshot?.updatedSlot ?? null,
         note: "Snapshot can be stale; contract rechecks the current period budget and token balance at approval and payout" });
     }
-    if (req.method === "POST" && req.url === "/v1/payroll-runs/readiness") {
+    if (req.method === "POST" && routePath === "/v1/payroll-runs/readiness") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req, 70_000);
@@ -1226,13 +1308,13 @@ createServer(async (req, res) => {
         canCreateRun: recipientsReady && remainingPolicyBudgetMicro >= total && snapshotCoversTotal === true,
         note: "This is a private preflight only. The contract rechecks budget and token balance before each payout." });
     }
-    if (req.method === "POST" && req.url === "/v1/payroll-runs") {
+    if (req.method === "POST" && routePath === "/v1/payroll-runs") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
       if (asAddress(body.requester, "requester") !== founderAddress) throw new Error("Founder must create this MVP payroll run");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress || policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
+      const policy = await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
+      if (policy.mint !== DEVNET_USDC) throw new Error("Wrong private company policy");
       const run = createPayrollRun(body.runId, companyAddress, body);
       await persistPayrollRun(run);
       await Promise.all(run.items.map((item) => persistLegacyPaymentFlow(item.paymentId, companyAddress)));
@@ -1241,22 +1323,20 @@ createServer(async (req, res) => {
         next: `/v1/payment-flows/${item.paymentId}/next`,
       })), approve: `/v1/payroll-runs/${run.runId}/approve`, status: `/v1/payroll-runs/${run.runId}` });
     }
-    if (req.method === "GET" && req.url === "/v1/payroll-runs") {
+    if (req.method === "GET" && routePath === "/v1/payroll-runs") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
       return reply(res, 200, { runs: (await listStoredPayrollRuns(companyAddress)).map((run) => ({
         ...run, status: `/v1/payroll-runs/${run.runId}`,
       })) });
     }
-    const payrollRun = req.url?.match(/^\/v1\/payroll-runs\/([^/?]+)(?:\/(approve|recover))?$/);
+    const payrollRun = routePath?.match(/^\/v1\/payroll-runs\/([^/?]+)(?:\/(approve|recover))?$/);
     if (payrollRun && req.method === "GET" && !payrollRun[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
       const run = await getStoredPayrollRun(payrollRun[1], companyAddress);
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
       const items = [];
       for (let offset = 0; offset < run.items.length; offset += 5) {
         const batch = await Promise.all(run.items.slice(offset, offset + 5).map(async (item) => {
@@ -1307,14 +1387,12 @@ createServer(async (req, res) => {
       }
       const approvals = [];
       for (const item of pending.slice(0, MAX_APPROVALS_PER_TRANSACTION)) {
-        const plan = await approvalPlan(item.request, actor, body.grant, body.parentGrant, token);
+        const plan = await approvalPlan(companyContext, item.request, actor, body.grant, body.parentGrant, token);
         const transaction = Transaction.from(Buffer.from(plan.transaction.transactionBase64, "base64"));
         if (transaction.instructions.length !== 1) throw new Error("Unexpected payroll approval instruction count");
         approvals.push(transaction.instructions[0]!);
       }
-      const endpoint = new URL(TEE_RPC);
-      endpoint.searchParams.set("token", token);
-      const blockhash = (await new Connection(endpoint.toString(), "confirmed").getLatestBlockhash()).blockhash;
+      const blockhash = (await teeConnection(token).getLatestBlockhash()).blockhash;
       const { transactionBase64, itemCount } = buildPayrollApprovalChunk({ actor, blockhash, instructions: approvals });
       const receipt = await recordOnboardingBuild({ company: companyAddress, target: run.runId,
         operation, chain: "ephemeral", transactionBase64 });
@@ -1323,8 +1401,8 @@ createServer(async (req, res) => {
         transaction: { status: "unsigned", operation: "approvePayroll", transactionBase64,
           requiredSigners: [actor], sendTo: "ephemeral", sendRpcEndpoint: TEE_RPC } });
     }
-    const paymentFlow = req.url?.match(/^\/v1\/payment-flows\/([^/?]+)(?:\/next)?$/);
-    if (paymentFlow && req.method === "GET" && !req.url?.endsWith("/next")) {
+    const paymentFlow = routePath?.match(/^\/v1\/payment-flows\/([^/?]+)(?:\/next)?$/);
+    if (paymentFlow && req.method === "GET" && !routePath?.endsWith("/next")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const flow = await getPaymentFlow(paymentFlow[1], companyAddress);
@@ -1345,7 +1423,7 @@ createServer(async (req, res) => {
       }
       return reply(res, 200, result);
     }
-    if (paymentFlow && req.method === "POST" && req.url?.endsWith("/next")) {
+    if (paymentFlow && req.method === "POST" && routePath?.endsWith("/next")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const body = await readJson(req);
@@ -1377,7 +1455,7 @@ createServer(async (req, res) => {
       let transaction: Awaited<ReturnType<typeof buildOperation>>;
       if (inspected.step.status === "approval_required") {
         operation = "approvePayment";
-        const plan = await approvalPlan(flow.request, actor, body.grant, body.parentGrant, token);
+        const plan = await approvalPlan(companyContext, flow.request, actor, body.grant, body.parentGrant, token);
         transaction = plan.transaction;
       } else {
         if (actor !== inspected.step.actor) throw new Error(`This step requires ${inspected.step.actor}`);
@@ -1428,12 +1506,12 @@ createServer(async (req, res) => {
         chain: transaction.sendTo, transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { ...baseResult, transaction, receiptId: receipt.id });
     }
-    if (req.method === "GET" && (req.url === "/v1/payment-jobs" || req.url?.startsWith("/v1/payment-jobs?"))) {
+    if (req.method === "GET" && routePath === "/v1/payment-jobs") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const policy = await readCompanyPolicy(companyAddress, token);
       if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
-      const query = new URL(req.url, "http://localhost");
+      const query = requestUrl;
       const limit = query.searchParams.has("limit") ? Number(query.searchParams.get("limit")) : 50;
       const snapshot = await readTreasurySnapshot(companyAddress, token).catch(() => null);
       const rows = [];
@@ -1458,11 +1536,10 @@ createServer(async (req, res) => {
       return reply(res, 200, { payments: rows, unavailableCount,
         snapshotUpdatedSlot: snapshot?.updatedSlot ?? null });
     }
-    if (req.method === "POST" && req.url === "/v1/reconciliation/run") {
+    if (req.method === "POST" && routePath === "/v1/reconciliation/run") {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
-      const policy = await readCompanyPolicy(companyAddress, token);
-      if (policy.founder !== founderAddress) throw new Error("Wrong private company policy");
+      await requireFounderPolicy({ company: companyAddress, founder: founderAddress, teeToken: token });
       const body = await readJson(req);
       const offset = body.paymentOffset === undefined ? 0 : Number(body.paymentOffset);
       const receiptOffset = body.receiptOffset === undefined ? 0 : Number(body.receiptOffset);
@@ -1516,7 +1593,7 @@ createServer(async (req, res) => {
         snapshotUpdatedSlot: snapshot?.updatedSlot ?? null,
         note: "This sweep only observes and updates receipts. Any new transfer or snapshot sync still needs an authorized wallet signature." });
     }
-    const paymentJob = req.url?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync|rebuild))?$/);
+    const paymentJob = routePath?.match(/^\/v1\/payment-jobs\/([^/?]+)(?:\/(prepare|submit|snapshot-sync|rebuild))?$/);
     if (paymentJob && req.method === "GET" && !paymentJob[2]) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
@@ -1572,7 +1649,7 @@ createServer(async (req, res) => {
       return reply(res, 200, { status: "build", receiptId: receipt.id, transaction });
     }
     if (paymentJob && req.method === "POST" && paymentJob[2] === "prepare") {
-      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Payment execution requires the verified Circle devnet USDC token CPI flow" });
       }
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -1590,7 +1667,7 @@ createServer(async (req, res) => {
       });
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
-      const plan = await executionPlan(record.request, actor, body.grant, token);
+      const plan = await executionPlan(companyContext, record.request, actor, body.grant, token);
       const prepared = await preparePayment(id, companyAddress, actor, plan.transaction.transactionBase64);
       return reply(res, 200, { record: prepared, ...plan });
     }
@@ -1602,9 +1679,7 @@ createServer(async (req, res) => {
       const request = await readPaymentRequest(companyAddress, record.request, token);
       if (request.status !== "approved") throw new Error("Payment must still be approved before rebuilding");
       if (!record.preparedBlockhash) throw new Error("Prepared blockhash is unavailable; inspect this payment manually");
-      const endpoint = new URL(TEE_RPC);
-      endpoint.searchParams.set("token", token);
-      const valid = (await new Connection(endpoint.toString(), "confirmed")
+      const valid = (await teeConnection(token)
         .isBlockhashValid(record.preparedBlockhash, { commitment: "confirmed" })).value;
       return reply(res, 200, { record: await abandonPreparedPayment(id, companyAddress, valid === false),
         next: `/v1/payment-jobs/${id}/prepare` });
@@ -1622,10 +1697,8 @@ createServer(async (req, res) => {
       if (request.status === "executed") return reply(res, 200, {
         record: await reconcilePayment(id, companyAddress, "executed", null), broadcast: "already_settled",
       });
-      const endpoint = new URL(TEE_RPC);
-      endpoint.searchParams.set("token", token);
       try {
-        const submitted = await new Connection(endpoint.toString(), "confirmed")
+        const submitted = await teeConnection(token)
           .sendRawTransaction(Transaction.from(Buffer.from(body.signedTransactionBase64, "base64")).serialize(),
             { skipPreflight: true, maxRetries: 3 });
         if (submitted !== bound.signature) throw new Error("PER returned a different signature");
@@ -1636,7 +1709,7 @@ createServer(async (req, res) => {
       }
     }
     if (payrollRun && req.method === "POST" && payrollRun[2] === "recover") {
-      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Payment execution requires the verified Circle devnet USDC token CPI flow" });
       }
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -1660,7 +1733,7 @@ createServer(async (req, res) => {
         if (request.status === "executed") {
           recoveries.push({ paymentId: item.paymentId, status: "settled" });
         } else if (request.status === "approved" && reconciled.state === "failed") {
-          const plan = await executionPlan(item.request, actor, body.grant, token);
+          const plan = await executionPlan(companyContext, item.request, actor, body.grant, token);
           const rebuilt = await preparePayment(item.paymentId, companyAddress, actor, plan.transaction.transactionBase64);
           recoveries.push({ paymentId: item.paymentId, status: "build", record: rebuilt, transaction: plan.transaction });
         } else {
@@ -1672,42 +1745,42 @@ createServer(async (req, res) => {
       return reply(res, 200, { runId: run.runId, recoveries,
         note: "Only confirmed failed signatures are rebuilt. Each replacement payout still needs the authorized signer." });
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/payments/") && req.url.endsWith("/status")) {
+    if (req.method === "GET" && routePath?.startsWith("/v1/payments/") && routePath.endsWith("/status")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const request = decodeURIComponent(req.url.slice("/v1/payments/".length, -"/status".length));
+      const request = decodeURIComponent(routePath.slice("/v1/payments/".length, -"/status".length));
       return reply(res, 200, paymentStatusFromRequest(await readPaymentRequest(companyAddress, request, token)));
     }
-    if (req.method === "POST" && req.url?.startsWith("/v1/payments/") && req.url.endsWith("/build-execution")) {
-      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+    if (req.method === "POST" && routePath?.startsWith("/v1/payments/") && routePath.endsWith("/build-execution")) {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Payment execution requires the verified Circle devnet USDC token CPI flow" });
       }
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const requestAddress = decodeURIComponent(req.url.slice("/v1/payments/".length, -"/build-execution".length));
+      const requestAddress = decodeURIComponent(routePath.slice("/v1/payments/".length, -"/build-execution".length));
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
-      return reply(res, 200, await executionPlan(requestAddress, actor, body.grant, token));
+      return reply(res, 200, await executionPlan(companyContext, requestAddress, actor, body.grant, token));
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/team-grants/")) {
+    if (req.method === "GET" && routePath?.startsWith("/v1/team-grants/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const grant = decodeURIComponent(req.url.slice("/v1/team-grants/".length));
+      const grant = decodeURIComponent(routePath.slice("/v1/team-grants/".length));
       return reply(res, 200, await readTeamGrant(companyAddress, grant, token));
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/agent-policies/")) {
+    if (req.method === "GET" && routePath?.startsWith("/v1/agent-policies/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const agentPolicy = decodeURIComponent(req.url.slice("/v1/agent-policies/".length));
+      const agentPolicy = decodeURIComponent(routePath.slice("/v1/agent-policies/".length));
       return reply(res, 200, await readAgentPolicy(companyAddress, agentPolicy, token));
     }
-    if (req.method === "POST" && req.url?.startsWith("/v1/agents/") && req.url.endsWith("/build-payment")) {
-      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+    if (req.method === "POST" && routePath?.startsWith("/v1/agents/") && routePath.endsWith("/build-payment")) {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Agent USDC payments are not enabled for this company" });
       }
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const agentPolicyAddress = decodeURIComponent(req.url.slice("/v1/agents/".length, -"/build-payment".length));
+      const agentPolicyAddress = decodeURIComponent(routePath.slice("/v1/agents/".length, -"/build-payment".length));
       const body = await readJson(req);
       const actor = asAddress(body.actor, "actor");
       const policy = await readAgentPolicy(companyAddress, agentPolicyAddress, token);
@@ -1722,19 +1795,19 @@ createServer(async (req, res) => {
         transaction,
       });
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/recipient-balance/")) {
+    if (req.method === "GET" && routePath?.startsWith("/v1/recipient-balance/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
-      const owner = decodeURIComponent(req.url.slice("/v1/recipient-balance/".length));
+      const owner = decodeURIComponent(routePath.slice("/v1/recipient-balance/".length));
       return reply(res, 200, await readRecipientBalance({
-        owner, mint: process.env.MERCURY_COMPANY_MINT, teeToken: token,
+        owner, mint: companyContext.mint, teeToken: token,
       }));
     }
-    if (req.method === "POST" && req.url === "/v1/private-receive/build") {
+    if (req.method === "POST" && routePath === "/v1/private-receive/build") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1") {
         return reply(res, 503, { error: "Private receive to the company PDA is still an integration experiment" });
       }
-      if (process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+      if (companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Private USDC receive requires a verified USDC company policy mint" });
       }
       const body = await readJson(req);
@@ -1745,11 +1818,12 @@ createServer(async (req, res) => {
         teeToken: typeof body.teeToken === "string" ? body.teeToken : undefined,
         cluster: process.env.MAGICBLOCK_CLUSTER ?? "devnet-private",
         expectedValidator: TEE_VALIDATOR.toBase58(),
+        privacy: body.privacy,
       });
       return reply(res, 200, { status: "unsigned", companyAddress, transaction });
     }
-    if (req.method === "POST" && req.url === "/v1/recipient-onboard/build") {
-      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || process.env.MERCURY_COMPANY_MINT !== DEVNET_USDC) {
+    if (req.method === "POST" && routePath === "/v1/recipient-onboard/build") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || companyContext.mint !== DEVNET_USDC) {
         return reply(res, 503, { error: "Private recipient onboarding requires the verified Circle devnet USDC receive flow" });
       }
       const body = await readJson(req);
@@ -1761,14 +1835,15 @@ createServer(async (req, res) => {
         teeToken: typeof body.teeToken === "string" ? body.teeToken : undefined,
         cluster: process.env.MAGICBLOCK_CLUSTER ?? "devnet-private",
         expectedValidator: TEE_VALIDATOR.toBase58(),
+        privacy: body.privacy,
       });
       return reply(res, 200, { status: "unsigned", recipient, transaction });
     }
-    if (req.method === "POST" && req.url === "/v1/recipient-withdraw/build") {
+    if (req.method === "POST" && routePath === "/v1/recipient-withdraw/build") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_WITHDRAW !== "1") {
         return reply(res, 503, { error: "Recipient withdrawal is gated until the configured mint is verified" });
       }
-      const mint = asAddress(process.env.MERCURY_COMPANY_MINT, "MERCURY_COMPANY_MINT");
+      const mint = companyContext.mint;
       const body = await readJson(req);
       const transaction = await prepareRecipientWithdrawal({
         owner: body.owner,
@@ -1779,7 +1854,7 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, { status: "unsigned", transaction });
     }
-    if (req.method === "POST" && req.url === "/v1/operations/build") {
+    if (req.method === "POST" && routePath === "/v1/operations/build") {
       const body = await readJson(req);
       if (
         ["executePayment", "fundAgentFloat", "agentPay", "reclaimAgentFloat"].includes(String(body.operation)) &&
@@ -1795,19 +1870,17 @@ createServer(async (req, res) => {
       });
       return reply(res, 200, result);
     }
-    if (req.method === "GET" && req.url?.startsWith("/v1/transactions/")) {
-      const url = new URL(req.url, `http://${host}:${port}`);
+    if (req.method === "GET" && routePath?.startsWith("/v1/transactions/")) {
+      const url = requestUrl;
       const signature = url.pathname.slice("/v1/transactions/".length);
       if (!/^[1-9A-HJ-NP-Za-km-z]{70,90}$/.test(signature)) throw new Error("Invalid transaction signature");
       const chain = url.searchParams.get("chain");
       if (chain !== "base" && chain !== "ephemeral") throw new Error("chain must be base or ephemeral");
-      const endpoint = new URL(chain === "base" ? BASE_RPC : TEE_RPC);
-      if (chain === "ephemeral") {
+      const connection = chain === "base" ? new Connection(BASE_RPC, "confirmed") : (() => {
         const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
         if (!token) throw new Error("TEE auth token required");
-        endpoint.searchParams.set("token", token);
-      }
-      const connection = new Connection(endpoint.toString(), "confirmed");
+        return teeConnection(token);
+      })();
       const status = (await connection.getSignatureStatuses([signature], { searchTransactionHistory: true })).value[0];
       return reply(res, 200, {
         signature, chain,

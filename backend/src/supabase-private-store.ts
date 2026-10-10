@@ -98,6 +98,21 @@ export class SupabasePrivateStore {
     return new SupabasePrivateStore({ url, secret, fetch: fetcher });
   }
 
+  async getCompany(companyInput: string): Promise<MercuryCompany | null> {
+    const companyId = asAddress(companyInput, "companyId");
+    const rows = await this.#request<Array<Record<string, string>>>("GET",
+      `/rest/v1/mercury_companies?company_id=eq.${encodeURIComponent(companyId)}&select=company_id,founder_wallet,policy_address,mint_address,per_validator&limit=1`);
+    const row = rows[0];
+    if (!row) return null;
+    return {
+      companyId: asAddress(row.company_id, "company_id"),
+      founderWallet: asAddress(row.founder_wallet, "founder_wallet"),
+      policyAddress: asAddress(row.policy_address, "policy_address"),
+      mintAddress: asAddress(row.mint_address, "mint_address"),
+      perValidator: asAddress(row.per_validator, "per_validator"),
+    };
+  }
+
   async registerCompany(input: MercuryCompany): Promise<void> {
     const companyId = asAddress(input.companyId, "companyId");
     const body = {
