@@ -3,11 +3,12 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { asAddress } from "./magicblock.ts";
 import { getOrCreatePaymentFlow } from "./payment-flow.ts";
+import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 const DEFAULT_PATH = new URL("../.state/invoices.json", import.meta.url).pathname;
 const path = () => process.env.MERCURY_INVOICE_JOURNAL ?? DEFAULT_PATH;
 
-type InvoiceRecord = { fingerprint: string; termsHash: string; paymentId: string };
+type InvoiceRecord = { company?: string; fingerprint: string; termsHash: string; paymentId: string };
 type Journal = { version: 1; secret: string; invoices: InvoiceRecord[] };
 
 function readJournal(): Journal {
@@ -33,11 +34,12 @@ function saveJournal(journal: Journal): void {
   const temporary = `${destination}.${process.pid}.tmp`;
   writeFileSync(temporary, JSON.stringify(journal, null, 2), { mode: 0o600 });
   renameSync(temporary, destination);
+  mirrorCompanyJournal({ domain: "invoices", journal, rowKeys: ["invoices"], sharedKeys: ["secret"] });
 }
 
 export function reserveInvoiceFlow(args: {
   company: string; vendorId: string; invoiceNumber: string; agent: string;
-  recipient: string; amountMicro: string;
+  recipient: string; amountMicro: string; includeFinance?: boolean;
 }): { paymentId: string; requestId: string; requestAddress: string; repeated: boolean } {
   const company = asAddress(args.company, "company");
   const agent = asAddress(args.agent, "agent");
@@ -54,6 +56,7 @@ export function reserveInvoiceFlow(args: {
   const termsHash = createHmac("sha256", key)
     .update(JSON.stringify([agent, recipient, args.amountMicro])).digest("hex");
   const existing = journal.invoices.find((item) => item.fingerprint === fingerprint);
+  if (existing?.company && existing.company !== company) throw new Error("Invoice belongs to another company");
   if (existing && existing.termsHash !== termsHash) {
     throw new Error("Invoice number is already bound to different payment terms; review it manually");
   }
@@ -64,11 +67,23 @@ export function reserveInvoiceFlow(args: {
   const paymentId = existing?.paymentId ??
     `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   const { flow } = getOrCreatePaymentFlow(paymentId, company, {
-    requester: agent, recipient, amountMicro: Number(args.amountMicro), includeFinance: true,
+    requester: agent, recipient, amountMicro: Number(args.amountMicro),
+    includeFinance: args.includeFinance ?? true,
   });
   if (!existing) {
-    journal.invoices.push({ fingerprint, termsHash, paymentId });
+    journal.invoices.push({ company, fingerprint, termsHash, paymentId });
+    saveJournal(journal);
+  } else if (!existing.company) {
+    // The fingerprint already commits to company; attach the explicit owner to legacy rows.
+    existing.company = company;
     saveJournal(journal);
   }
   return { paymentId, requestId: flow.requestId, requestAddress: flow.request, repeated: !!existing };
+}
+
+export function listInvoicePaymentIds(companyInput: unknown): string[] {
+  const company = asAddress(companyInput, "company");
+  return readJournal().invoices
+    .filter((item) => item.company === company)
+    .map((item) => item.paymentId);
 }

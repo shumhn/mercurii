@@ -62,6 +62,22 @@ test("invoice Suggest rejects unregistered vendors, mismatch, oversized amount, 
   await assert.rejects(() => suggestInvoicePayment({ ...base, fetchImpl: modelResponse({ ...extracted, currency: "SOL" }) }), /Only USD/);
 });
 
+test("invoice Suggest accepts a precise numeric amount from a thinking model", async () => {
+  const result = await suggestInvoicePayment({
+    invoiceText: "Acme Cloud LLC invoice AC-102 for USD 12.50 due October 20.",
+    vendorId: "acme", companyAddress, founderAddress, agentAddress, registry,
+    modelUrl: "http://localhost:11434/v1/chat/completions", modelName: "thinking-test",
+    requestIdFactory: () => "43", fetchImpl: modelResponse({ ...extracted, amount: 12.5 }),
+  });
+  assert.equal(result.amountMicro, "12500000");
+  await assert.rejects(suggestInvoicePayment({
+    invoiceText: "Acme Cloud LLC invoice AC-102 for USD 12.50 due October 20.",
+    vendorId: "acme", companyAddress, founderAddress, agentAddress, registry,
+    modelUrl: "http://localhost:11434/v1/chat/completions", modelName: "thinking-test",
+    fetchImpl: modelResponse({ ...extracted, amount: 12.505 }),
+  }), /invalid extracted amount/);
+});
+
 test("invoice Suggest keeps invoice text local unless remote model use is explicitly enabled", async () => {
   const base = {
     invoiceText: "Acme Cloud LLC invoice AC-102 for $12.50 due October 20.",

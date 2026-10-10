@@ -4,7 +4,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Keypair } from "@solana/web3.js";
-import { reserveInvoiceFlow } from "../src/invoice-journal.ts";
+import { listInvoicePaymentIds, reserveInvoiceFlow } from "../src/invoice-journal.ts";
+import { getOrCreatePaymentFlow } from "../src/payment-flow.ts";
 
 test("one vendor invoice stays bound to one private payment across repeated suggestions", () => {
   const directory = mkdtempSync(join(tmpdir(), "mercury-invoice-"));
@@ -30,11 +31,30 @@ test("one vendor invoice stays bound to one private payment across repeated sugg
       /different payment terms/);
     assert.notEqual(reserveInvoiceFlow({ ...args, invoiceNumber: "AC-103" }).paymentId, first.paymentId);
     assert.notEqual(reserveInvoiceFlow({ ...args, vendorId: "other" }).paymentId, first.paymentId);
+    const otherCompany = Keypair.generate().publicKey.toBase58();
+    const other = reserveInvoiceFlow({ ...args, company: otherCompany });
+    assert.notEqual(other.paymentId, first.paymentId);
+    assert.equal(reserveInvoiceFlow({ ...args, company: otherCompany }).paymentId, other.paymentId);
+    const founderSuggestion = reserveInvoiceFlow({ ...args, invoiceNumber: "AC-FOUNDER",
+      includeFinance: false });
+    const founderDraft = getOrCreatePaymentFlow(founderSuggestion.paymentId, args.company, {
+      requester: args.agent, recipient: args.recipient,
+      amountMicro: Number(args.amountMicro), includeFinance: false,
+    });
+    assert.equal(founderDraft.flow.request, founderSuggestion.requestAddress);
     const disk = readFileSync(process.env.MERCURY_INVOICE_JOURNAL!, "utf8");
     assert.equal(statSync(process.env.MERCURY_INVOICE_JOURNAL!).mode & 0o777, 0o600);
     assert.equal(disk.includes("AC-102"), false);
     assert.equal(disk.includes(args.recipient), false);
     assert.equal(disk.includes(args.amountMicro), false);
+    const records = JSON.parse(disk) as { invoices: Array<{ company: string }> };
+    assert.ok(records.invoices.some((record) => record.company === args.company));
+    assert.ok(records.invoices.some((record) => record.company === otherCompany));
+    const companyInvoiceIds = listInvoicePaymentIds(args.company);
+    assert.ok(companyInvoiceIds.includes(first.paymentId));
+    assert.ok(companyInvoiceIds.includes(founderSuggestion.paymentId));
+    assert.equal(companyInvoiceIds.length, 4);
+    assert.deepEqual(listInvoicePaymentIds(otherCompany), [other.paymentId]);
     assert.equal(readFileSync(process.env.MERCURY_PAYMENT_FLOW_JOURNAL!, "utf8").includes(args.recipient), false);
   } finally {
     if (previousInvoice === undefined) delete process.env.MERCURY_INVOICE_JOURNAL;

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { createAssistantChallenge, consumeAssistantChallenge } from "../src/assistant-auth.ts";
+import { assertTeeTokenActor, createAssistantChallenge, consumeAssistantChallenge } from "../src/assistant-auth.ts";
 import { answerAssistantQuestion, classifyAssistantQuestion, resolveAssistantAccess } from "../src/finance-assistant.ts";
 import { branchScopeAddress } from "../src/operations.ts";
 
@@ -53,6 +53,43 @@ test("assistant wallet challenge is one-use and bound to company and wallet", ()
     challengeId: fresh.challengeId, signature: signed }), wallet.publicKey.toBase58());
   assert.throws(() => consumeAssistantChallenge({ company, actor: wallet.publicKey.toBase58(),
     challengeId: fresh.challengeId, signature: signed }), /already used/);
+});
+
+test("TEE token subject must match the wallet that signed the assistant challenge", () => {
+  const token = (pubkey: string, exp: number, alg = "HS256") => [
+    Buffer.from(JSON.stringify({ alg, typ: "JWT" })).toString("base64url"),
+    Buffer.from(JSON.stringify({ pubkey, exp })).toString("base64url"),
+    "signature",
+  ].join(".");
+  const now = 1_000_000;
+  assert.doesNotThrow(() => assertTeeTokenActor(token(founder, 2_000), founder, now));
+  assert.throws(() => assertTeeTokenActor(token(finance, 2_000), founder, now), /does not match/);
+  assert.throws(() => assertTeeTokenActor(token(founder, 1_000), founder, now), /expired/);
+  assert.throws(() => assertTeeTokenActor(token(founder, 2_000, "none"), founder, now), /does not match/);
+  assert.throws(() => assertTeeTokenActor("opaque-token", founder, now), /format/);
+});
+
+test("x402 wallet signature binds the approved service, recipient, and task", () => {
+  const wallet = Keypair.generate();
+  const intent = { serviceId: "research", taskId: "9bc7d8bb-d209-46ad-ad33-0c18a5aff59f",
+    url: "https://example.org/report", payTo: recipient, maxMicro: "1000" };
+  const challenge = createAssistantChallenge(company, wallet.publicKey.toBase58(), Date.now(), intent);
+  assert.match(challenge.message, /allow one isolated-wallet x402 purchase/);
+  assert.match(challenge.message, /1000 micro USDC/);
+  const signature = bs58.encode(nacl.sign.detached(Buffer.from(challenge.message), wallet.secretKey));
+  assert.throws(() => consumeAssistantChallenge({ company, actor: wallet.publicKey.toBase58(),
+    challengeId: challenge.challengeId, signature,
+    x402Intent: { ...intent, maxMicro: "2000" } }), /terms do not match/);
+  const fresh = createAssistantChallenge(company, wallet.publicKey.toBase58(), Date.now(), intent);
+  const freshSignature = bs58.encode(nacl.sign.detached(Buffer.from(fresh.message), wallet.secretKey));
+  assert.equal(consumeAssistantChallenge({ company, actor: wallet.publicKey.toBase58(),
+    challengeId: fresh.challengeId, signature: freshSignature, x402Intent: intent }),
+    wallet.publicKey.toBase58());
+  const noSpend = createAssistantChallenge(company, wallet.publicKey.toBase58());
+  const noSpendSignature = bs58.encode(nacl.sign.detached(Buffer.from(noSpend.message), wallet.secretKey));
+  assert.throws(() => consumeAssistantChallenge({ company, actor: wallet.publicKey.toBase58(),
+    challengeId: noSpend.challengeId, signature: noSpendSignature, x402Intent: intent }),
+  /terms do not match/);
 });
 
 test("assistant grants enforce role, parent revocation, and branch scope", async () => {

@@ -50,10 +50,10 @@ test("invoice HTTP suggestion links one guided flow and rejects changed terms", 
   try {
     const base = `http://127.0.0.1:${backendPort}`;
     let ready = false;
-    for (let attempt = 0; attempt < 50; attempt++) {
+    for (let attempt = 0; attempt < 100; attempt++) {
       try { ready = (await fetch(`${base}/health`)).ok; } catch { /* starting */ }
       if (ready) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await new Promise((resolve) => setTimeout(resolve, 100));
     }
     assert.equal(ready, true, "backend did not start");
     const suggest = async () => fetch(`${base}/v1/agent/invoice-suggestions`, {
