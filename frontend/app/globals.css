@@ -1,0 +1,109 @@
+@import "tailwindcss";
+
+:root {
+  --background: #F2F2F1;
+  --foreground: #141a24;
+  --color-ink: #141a24;
+  --brand: #0038ff;
+  --brand-hover: #002fe0;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-ink: var(--color-ink);
+  --color-brand: var(--brand);
+  --font-sans: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+/* Force Switzer globally across all elements */
+html,
+body,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p,
+span,
+a,
+button,
+input,
+select,
+textarea {
+  font-family: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
+}
+
+body {
+  background-color: #F2F2F1;
+  color: #141a24;
+  letter-spacing: -0.025em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Mercurii typography scale: one voice across every landing-page section. */
+.mercury-section-kicker {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.mercury-section-title {
+  font-family: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: clamp(2.25rem, 4vw, 3.5rem);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+}
+
+/* The problem statement earns a larger, quieter centered treatment. */
+.mercury-section-title--statement {
+  font-size: clamp(2.6rem, 5vw, 4.5rem);
+  font-weight: 500;
+  line-height: 1.05;
+}
+
+.mercury-section-copy {
+  font-size: clamp(1rem, 1.2vw, 1.125rem);
+  font-weight: 400;
+  line-height: 1.65;
+}
+
+.mercury-card-title {
+  font-size: clamp(1.25rem, 1.7vw, 1.5rem);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  line-height: 1.18;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F2F2F1;
+}
+::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+/* Keep the AI section compact enough to balance its policy panel. */
+.mercury-section-title--agent {
+  font-size: clamp(2.4rem, 3.65vw, 3.5rem);
+  line-height: 1.08;
+}
+
+/* The permission story reads as a compact access map rather than a wall of text. */
+.mercury-section-title--team {
+  font-size: clamp(2.4rem, 3.65vw, 3.5rem);
+  line-height: 1.08;
+}
