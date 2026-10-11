@@ -3,9 +3,7 @@
 import React, { useState } from "react";
 import {
   ShieldAlert,
-  ShieldCheck,
   EyeOff,
-  Eye,
   CheckCircle2,
   Lock,
   Unlock,
@@ -13,8 +11,6 @@ import {
   Bot,
   Building,
   Key,
-  ArrowRight,
-  TrendingDown,
   Clock,
   Sparkles,
 } from "lucide-react";

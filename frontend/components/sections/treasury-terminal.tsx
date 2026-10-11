@@ -6,20 +6,13 @@ import {
   Lock,
   Unlock,
   ExternalLink,
-  ShieldCheck,
   CheckCircle2,
-  Clock,
   Coins,
-  Bot,
-  Users,
-  Building,
-  Key,
 } from "lucide-react";
 
 export function TreasuryTerminal() {
   const [activeTab, setActiveTab] = useState<"all" | "payroll" | "vendors" | "agent">("all");
   const [isOutsiderView, setIsOutsiderView] = useState(false);
-  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
 
   const transactions = [
     {
@@ -199,8 +192,6 @@ export function TreasuryTerminal() {
               {filtered.map((item, idx) => (
                 <tr
                   key={idx}
-                  onMouseEnter={() => setHoveredRow(idx)}
-                  onMouseLeave={() => setHoveredRow(null)}
                   className="hover:bg-white/[0.03] transition-colors relative"
                 >
                   {/* Column 1 */}

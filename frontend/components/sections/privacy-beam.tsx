@@ -1,16 +1,7 @@
 "use client";
 
 import React from "react";
-import {
-  Shield,
-  Cpu,
-  Lock,
-  ArrowRight,
-  Database,
-  Coins,
-  CheckCircle2,
-  Layers,
-} from "lucide-react";
+import { Cpu, Lock, Database, CheckCircle2 } from "lucide-react";
 import { BorderBeam } from "@/components/ui/border-beam";
 import { Badge } from "@/components/ui/badge";
 

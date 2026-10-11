@@ -1,7 +1,6 @@
 "use client";
 
 import React from "react";
-import { ShieldCheck, Zap, Lock, Cpu, KeyRound } from "lucide-react";
 
 export function Pillars() {
   const pillars = [

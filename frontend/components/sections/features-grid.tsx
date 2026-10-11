@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowRight, CheckCircle2, Shield, Zap, Globe, FileText, CreditCard } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 export function FeaturesGrid() {
   const features = [

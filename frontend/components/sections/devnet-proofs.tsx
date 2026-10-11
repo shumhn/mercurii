@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import { Terminal, ExternalLink, CheckCircle2, ShieldCheck, Copy, Check } from "lucide-react";
+import { ExternalLink, Copy, Check } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 
 export function DevnetProofs() {

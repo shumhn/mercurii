@@ -2,19 +2,13 @@
 
 import React from "react";
 import {
-  Users,
-  ShieldCheck,
   Bot,
   FileCheck2,
   Lock,
-  ArrowRight,
-  Sparkles,
-  Zap,
   KeyRound,
   FileSpreadsheet,
   CheckCircle,
 } from "lucide-react";
-import { BorderBeam } from "@/components/ui/border-beam";
 import { Badge } from "@/components/ui/badge";
 
 export function BentoFeatures() {
