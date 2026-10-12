@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { MercuriiWorkspace } from "@/components/app/mercurii-workspace";
+import { MercuriiApp } from "@/components/app/mercurii-app";
 
 export const metadata: Metadata = {
   title: "Workspace — Mercurii",
@@ -7,5 +7,5 @@ export const metadata: Metadata = {
 };
 
 export default function WorkspacePage() {
-  return <MercuriiWorkspace />;
+  return <MercuriiApp />;
 }

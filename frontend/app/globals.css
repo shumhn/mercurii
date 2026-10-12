@@ -6,6 +6,9 @@
   --color-ink: #141a24;
   --brand: #0038ff;
   --brand-hover: #002fe0;
+  --app-canvas: #f5f7fb;
+  --app-line: #e3e8f0;
+  --app-muted: #5b667a;
 }
 
 @theme inline {
@@ -13,6 +16,9 @@
   --color-foreground: var(--foreground);
   --color-ink: var(--color-ink);
   --color-brand: var(--brand);
+  --color-app-canvas: var(--app-canvas);
+  --color-app-line: var(--app-line);
+  --color-app-muted: var(--app-muted);
   --font-sans: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-display: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
 }

@@ -45,7 +45,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={`${switzer.variable} antialiased scroll-smooth`}>
-      <body className={`${switzer.className} min-h-screen bg-[#F2F2F1] text-[#141a24] flex flex-col font-sans selection:bg-blue-600/10 selection:text-blue-900`}>
+      <body suppressHydrationWarning className={`${switzer.className} min-h-screen bg-[#F2F2F1] text-[#141a24] flex flex-col font-sans selection:bg-blue-600/10 selection:text-blue-900`}>
         {children}
       </body>
     </html>
