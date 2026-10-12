@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { PublicKey } from "@solana/web3.js";
@@ -8,7 +8,8 @@ import { Activity, ArrowDownLeft, ArrowRight, Bot, ChevronRight, CircleAlert, Cl
   FileText, Landmark, LayoutDashboard, LoaderCircle, LockKeyhole, LogOut, Menu,
   RefreshCw, Settings2, ShieldCheck, UsersRound, WalletCards, X } from "lucide-react";
 import { api, formatUsdc, roleFromGrant, shortAddress, type AccessRole, type PaymentRow } from "@/lib/mercurii-client";
-import { installedWallet, signPrepared, type PreparedTransaction } from "@/lib/mercurii-wallet";
+import { signPrepared, watchInstalledWallets, type BrowserWallet, type PreparedTransaction,
+  type WalletOption } from "@/lib/mercurii-wallet";
 import { useMercurii, type MercuriiController, type Resource } from "./use-mercurii";
 import { PaymentsPanel, type PaymentDraft } from "./payments-panel";
 import { ReceivePanel, WithdrawPanel } from "./receive-panel";
@@ -94,10 +95,24 @@ export function MercuriiApp() {
   const [registerError, setRegisterError] = useState<string | null>(null);
   const [bootstrapFinance, setBootstrapFinance] = useState("");
   const [bootstrapStep, setBootstrapStep] = useState<BootstrapStep | null>(null);
+  const [walletOptions, setWalletOptions] = useState<WalletOption[]>([]);
+  const [walletChoice, setWalletChoice] = useState<WalletOption | null>(null);
+  const [walletIntent, setWalletIntent] = useState<"connect" | "register" | "prepare" | null>(null);
   const page = titles[view];
   const activeRole = app.session?.role;
   const visibleNavigation = navigation.filter((item) => !activeRole || !item.roles || item.roles.includes(activeRole));
   const viewPermitted = visibleNavigation.some((item) => item.id === view);
+
+  useEffect(() => watchInstalledWallets(setWalletOptions), []);
+
+  function selectWallet(option: WalletOption) {
+    const intent = walletIntent;
+    setWalletChoice(option);
+    setWalletIntent(null);
+    if (intent === "connect") void app.connect(option.wallet);
+    if (intent === "register") void registerExistingShell(option.wallet);
+    if (intent === "prepare") void prepareNewShell(option.wallet);
+  }
 
   function navigate(next: AppView) {
     const key = app.session ? `${app.session.company}:${app.session.address}` : "";
@@ -114,12 +129,12 @@ export function MercuriiApp() {
     setMobileOpen(false);
     void app.disconnect();
   }
-  async function registerExistingShell() {
+  async function registerExistingShell(selectedWallet?: BrowserWallet) {
     setRegisterBusy(true); setRegisterError(null); setRegisterMessage(null);
     try {
       if (!app.programId) throw new Error("Backend program ID is unavailable");
-      const wallet = installedWallet();
-      if (!wallet) throw new Error("Install or enable a Solana wallet first");
+      const wallet = selectedWallet ?? walletChoice?.wallet;
+      if (!wallet) throw new Error("Choose the Founder wallet first");
       const founder = (await wallet.connect()).publicKey;
       const [company] = PublicKey.findProgramAddressSync([
         new TextEncoder().encode("company-policy"), new PublicKey(founder.toBase58()).toBytes(),
@@ -133,13 +148,13 @@ export function MercuriiApp() {
       setRegisterError(cause instanceof Error ? cause.message : "Could not register company shell");
     } finally { setRegisterBusy(false); }
   }
-  async function prepareNewShell() {
+  async function prepareNewShell(selectedWallet?: BrowserWallet) {
     setRegisterBusy(true); setRegisterError(null); setRegisterMessage(null);
     try {
       if (bootstrapStep?.signedTransactionBase64) throw new Error("Check the original signed shell transaction before preparing another.");
       const finance = new PublicKey(bootstrapFinance.trim()).toBase58();
-      const wallet = installedWallet();
-      if (!wallet) throw new Error("Install or enable a Solana wallet first");
+      const wallet = selectedWallet ?? walletChoice?.wallet;
+      if (!wallet) throw new Error("Choose the Founder wallet first");
       const founder = (await wallet.connect()).publicKey.toBase58();
       const result = await api<{ status: "sign" | "shell_exists"; company: string;
         transaction?: PreparedTransaction }>("/v1/companies/bootstrap/prepare", { body: { founder, finance } });
@@ -158,8 +173,8 @@ export function MercuriiApp() {
     if (!bootstrapStep) return;
     setRegisterBusy(true); setRegisterError(null); setRegisterMessage(null);
     try {
-      const wallet = installedWallet();
-      if (!wallet) throw new Error("Founder wallet is unavailable");
+      const wallet = walletChoice?.wallet;
+      if (!wallet) throw new Error("Choose the same Founder wallet before signing");
       const signedTransactionBase64 = retry && bootstrapStep.signedTransactionBase64
         ? bootstrapStep.signedTransactionBase64
         : (await signPrepared(wallet, bootstrapStep.founder, bootstrapStep.transaction)).signedTransactionBase64;
@@ -191,11 +206,26 @@ export function MercuriiApp() {
   }
 
   return <main className="min-h-screen bg-app-canvas text-foreground">
+    {walletIntent && <div className="fixed inset-0 z-[70] grid place-items-center bg-slate-950/45 p-4" role="dialog" aria-modal="true" aria-labelledby="wallet-picker-title">
+      <div className="w-full max-w-md rounded-2xl border border-app-line bg-white p-5 shadow-2xl sm:p-6">
+        <div className="flex items-start justify-between gap-4"><div><h2 id="wallet-picker-title" className="text-xl font-semibold">Choose a Solana wallet</h2>
+          <p className="mt-1 text-sm leading-6 text-app-muted">Mercurii supports wallets registered through Solana Wallet Standard.</p></div>
+          <button className="grid size-9 place-items-center rounded-lg hover:bg-app-canvas focus-visible:outline-2 focus-visible:outline-brand" onClick={() => setWalletIntent(null)} aria-label="Close wallet picker"><X className="size-5" /></button></div>
+        {walletOptions.length ? <div className="mt-5 space-y-2">{walletOptions.map((option) => <button key={option.id}
+          className="flex min-h-14 w-full items-center gap-3 rounded-xl border border-app-line px-4 text-left transition-colors hover:border-brand/40 hover:bg-brand/[.035] focus-visible:outline-2 focus-visible:outline-brand"
+          onClick={() => selectWallet(option)}>{option.icon ? <Image src={option.icon} alt="" width={34} height={34} unoptimized className="size-[34px] rounded-lg" /> :
+            <span className="grid size-[34px] place-items-center rounded-lg bg-brand/10 text-brand"><WalletCards className="size-5" /></span>}
+          <span className="font-semibold">{option.name}</span><span className="ml-auto text-xs text-app-muted">{option.standard ? "Wallet Standard" : "Browser wallet"}</span></button>)}</div> :
+          <div className="mt-5 rounded-xl bg-app-canvas p-4"><p className="text-sm font-semibold">No compatible wallet detected</p>
+            <p className="mt-1 text-sm leading-6 text-app-muted">Install or enable Phantom, Solflare, Backpack, Glow, or another Wallet Standard compatible Solana wallet, then reopen this picker.</p></div>}
+        <p className="mt-5 text-xs leading-5 text-app-muted">The selected wallet signs the login challenge and every transaction. Mercurii never receives its private key.</p>
+      </div>
+    </div>}
     <div className="flex min-h-screen">
       <aside className={`fixed inset-y-0 left-0 z-40 flex w-[268px] flex-col border-r border-app-line bg-white transition-transform lg:sticky lg:top-0 lg:h-screen lg:translate-x-0 ${mobileOpen ? "translate-x-0" : "-translate-x-full"}`}>
         <div className="flex h-[72px] items-center justify-between border-b border-app-line px-5">
           <Link href="/" className="flex items-center gap-2 text-lg font-semibold tracking-tight focus-visible:outline-2 focus-visible:outline-brand" aria-label="Mercurii home">
-            <Image src="/mercurii-symbol-blue.png" alt="" width={36} height={36} className="object-contain" priority />Mercurii
+            <Image src="/mercurii-symbol-blue.png" alt="" width={40} height={30} className="h-[30px] w-10 object-contain" priority />Mercurii
           </Link>
           <button onClick={() => setMobileOpen(false)} className="grid size-10 place-items-center rounded-lg focus-visible:outline-2 focus-visible:outline-brand lg:hidden" aria-label="Close navigation"><X className="size-5" /></button>
         </div>
@@ -229,7 +259,7 @@ export function MercuriiApp() {
           <div className="flex items-center gap-3">{app.session ? <><span className="hidden rounded-full bg-brand/10 px-3 py-1.5 text-xs font-semibold capitalize text-brand sm:inline">{app.session.role}</span>
             <span className="hidden text-sm font-medium sm:inline">{shortAddress(app.session.address)}</span>
             <button className={secondaryButtonClass} onClick={disconnect} aria-label="Disconnect wallet"><LogOut className="size-4" aria-hidden /><span className="hidden sm:inline">Disconnect</span></button></> :
-            <button className={buttonClass} onClick={app.connect} disabled={app.connecting} aria-busy={app.connecting}>
+            <button className={buttonClass} onClick={() => setWalletIntent("connect")} disabled={app.connecting} aria-busy={app.connecting}>
               {app.connecting ? <LoaderCircle className="size-4 animate-spin" aria-hidden /> : <WalletCards className="size-4" aria-hidden />}
               {app.connecting ? "Connecting" : "Connect wallet"}</button>}</div>
         </header>
@@ -249,17 +279,17 @@ export function MercuriiApp() {
               <div className="mt-7 max-w-xl"><label htmlFor="company-address" className="mb-2 block text-sm font-semibold">Company policy address</label>
                 <input id="company-address" className={inputClass} value={app.company} onChange={(event) => app.setCompany(event.target.value)} placeholder="Solana company PDA" autoComplete="off" spellCheck={false} />
                 <p className="mt-2 text-xs leading-5 text-app-muted">The local backend fills this automatically when a default company is configured.</p></div>
-              <button className={`${buttonClass} mt-6`} onClick={app.connect} disabled={app.connecting}>{app.connecting ? "Waiting for wallet…" : "Connect & unlock"}<ArrowRight className="size-4" aria-hidden /></button>
+              <button className={`${buttonClass} mt-6`} onClick={() => setWalletIntent("connect")} disabled={app.connecting}>{app.connecting ? "Waiting for wallet…" : "Connect & unlock"}<ArrowRight className="size-4" aria-hidden /></button>
               <details className="mt-6 border-t border-app-line pt-5 text-sm"><summary className="cursor-pointer font-semibold text-brand">Already have an on-chain company shell?</summary>
                 <p className="mt-2 max-w-xl leading-6 text-app-muted">Use the Founder wallet to verify its existing Mercurii policy account and register it with this backend. This step does not create a new on-chain shell.</p>
-                <button className={`${secondaryButtonClass} mt-3`} disabled={registerBusy || app.backendStatus !== "online"} onClick={() => void registerExistingShell()}>{registerBusy ? "Verifying shell…" : "Register existing shell"}</button>
+                <button className={`${secondaryButtonClass} mt-3`} disabled={registerBusy || app.backendStatus !== "online"} onClick={() => setWalletIntent("register")}>{registerBusy ? "Verifying shell…" : "Register existing shell"}</button>
                 {registerMessage && <p role="status" className="mt-3 text-emerald-700">{registerMessage}</p>}
                 {registerError && <p role="alert" className="mt-3 text-red-700">{registerError}</p>}
               </details>
               <details className="mt-5 border-t border-app-line pt-5 text-sm"><summary className="cursor-pointer font-semibold text-brand">Starting a new company?</summary>
                 <p className="mt-2 max-w-xl leading-6 text-app-muted">Create the public Founder and Finance shell first. Spending limits and private balances are added only after registration and MagicBlock private setup.</p>
                 <label className="mt-4 block max-w-xl font-semibold">Finance wallet<input className={`${inputClass} mt-2 font-mono`} value={bootstrapFinance} disabled={Boolean(bootstrapStep?.signedTransactionBase64)} onChange={(event) => { setBootstrapFinance(event.target.value); setBootstrapStep(null); }} placeholder="Solana Finance address" /></label>
-                <button className={`${secondaryButtonClass} mt-3`} disabled={registerBusy || app.backendStatus !== "online" || Boolean(bootstrapStep?.signedTransactionBase64)} onClick={() => void prepareNewShell()}>Prepare public shell</button>
+                <button className={`${secondaryButtonClass} mt-3`} disabled={registerBusy || app.backendStatus !== "online" || Boolean(bootstrapStep?.signedTransactionBase64)} onClick={() => setWalletIntent("prepare")}>Prepare public shell</button>
                 {bootstrapStep && <div className="mt-4 rounded-xl border border-app-line bg-app-canvas p-4 text-xs">
                   <p className="font-semibold">Founder <span className="font-mono">{shortAddress(bootstrapStep.founder)}</span> · Finance <span className="font-mono">{shortAddress(bootstrapStep.finance)}</span></p>
                   <p className="mt-2 break-all font-mono text-app-muted">Company policy: {bootstrapStep.company}</p>
@@ -267,7 +297,7 @@ export function MercuriiApp() {
                   <div className="mt-3 flex flex-wrap gap-2"><button className={buttonClass} disabled={registerBusy || Boolean(bootstrapStep.signedTransactionBase64)} onClick={() => void submitNewShell()}>{bootstrapStep.signedTransactionBase64 ? "Shell transaction signed" : "Review & sign shell"}</button>
                     <button className={secondaryButtonClass} disabled={registerBusy} onClick={() => void inspectNewShell()}>Check chain status</button>
                     {bootstrapStep.signedTransactionBase64 && !bootstrapStep.shellExists && <button className={secondaryButtonClass} disabled={registerBusy} onClick={() => void submitNewShell(true)}>Retry same signature</button>}
-                    {bootstrapStep.shellExists && <button className={buttonClass} disabled={registerBusy} onClick={() => void registerExistingShell()}>Register confirmed shell</button>}</div>
+                    {bootstrapStep.shellExists && <button className={buttonClass} disabled={registerBusy} onClick={() => setWalletIntent("register")}>Register confirmed shell</button>}</div>
                   {bootstrapStep.signature && <p className="mt-3 break-all font-mono text-app-muted">Signature: {bootstrapStep.signature} · {bootstrapStep.signatureStatus ?? bootstrapStep.broadcast ?? "pending"}</p>}
                 </div>}
                 {registerMessage && <p role="status" className="mt-3 text-emerald-700">{registerMessage}</p>}

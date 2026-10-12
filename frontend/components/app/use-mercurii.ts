@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AccessRole, type CompanyPolicy, type Payee, type PaymentRow, type RecipientBalance,
   type PayrollRun, type PayrollSchedule, type TeamMember, type TreasurySnapshot, roleFromGrant } from "@/lib/mercurii-client";
-import { installedWallet, signMessage, type BrowserWallet } from "@/lib/mercurii-wallet";
+import { signMessage, type BrowserWallet } from "@/lib/mercurii-wallet";
 
 export type Resource<T> = { state: "idle" | "loading" | "ready" | "error"; value: T | null; error: string | null };
 const idle = <T,>(): Resource<T> => ({ state: "idle", value: null, error: null });
@@ -148,13 +148,11 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
     await Promise.allSettled(tasks);
   }, [audits, clearSession, load, members, payees, payments, payrollRuns, payrollSchedules, policy, recipientBalance, snapshot]);
 
-  const connect = useCallback(async () => {
+  const connect = useCallback(async (wallet: BrowserWallet) => {
     setConnectionError(null);
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(company.trim())) {
       setConnectionError("Enter the company policy address before connecting"); return;
     }
-    const wallet = installedWallet();
-    if (!wallet) { setConnectionError("Install or enable a Solana wallet such as Phantom or Solflare"); return; }
     const generation = ++generationRef.current;
     clearPrivateData();
     setConnecting(true);
