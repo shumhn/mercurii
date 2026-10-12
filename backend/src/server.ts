@@ -21,8 +21,10 @@ import { confirmOnboardingReceipt as confirmLocalOnboardingReceipt,
   listOnboardingReceipts as listLocalOnboardingReceipts,
   reconcileOnboardingReceipt as reconcileLocalOnboardingReceipt,
   recordOnboardingBuild as recordLocalOnboardingBuild,
-  waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "./onboarding-journal.ts";
+  waitForCleanupReceipt, hasConfirmedRecipientDeposit, validateSignedOnboardingReceipt } from "./onboarding-journal.ts";
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
+import { inspectAgentOnboarding } from "./agent-onboarding.ts";
+import { listVisibleAgentPolicies } from "./agent-directory.ts";
 import { nextTreasuryFundingStep } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
@@ -54,6 +56,7 @@ import { DatabaseOnboardingReceiptStore } from "./database-onboarding-receipt-st
 import { SupabasePrivateStore } from "./supabase-private-store.ts";
 import { requestedCompanySelector, resolveCompany, verifyAndRegisterCompany,
   type CompanyContext } from "./company-registry.ts";
+import { founderCompanyAddress, validateSignedCompanyBootstrap } from "./company-bootstrap.ts";
 import { completeTeeLogin, createTeeLoginChallenge } from "./tee-login.ts";
 import { requireFounderPolicy } from "./founder-access.ts";
 import { applyConfirmedReaderCleanup as applyLocalConfirmedReaderCleanup, flowReceiptOperation,
@@ -497,13 +500,64 @@ createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
       return reply(res, 200, { ok: true, companyAddress: defaultCompanyAddress,
-        multiCompany: true, programId: PROGRAM_ID.toBase58() });
+        multiCompany: true, programId: PROGRAM_ID.toBase58(), capabilities: {
+          privateReceive: process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE === "1",
+          paymentExecution: process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS === "1",
+          financeAgent: process.env.MERCURY_ENABLE_FINANCE_ASSISTANT === "1",
+          x402: process.env.MERCURY_ENABLE_X402_AGENT === "1",
+          recipientWithdraw: process.env.MERCURY_ENABLE_EXPERIMENTAL_WITHDRAW === "1",
+        } });
     }
     if (req.method === "POST" && req.url === "/v1/companies/register") {
       const body = await readJson(req);
       const context = await verifyAndRegisterCompany({ company: body.company, founder: body.founder });
       return reply(res, 200, { status: "registered", ...context,
         note: "On-chain shell verified against the founder-derived policy PDA. Private operations still require TEE access." });
+    }
+    if (req.method === "POST" && req.url === "/v1/companies/bootstrap/prepare") {
+      const body = await readJson(req);
+      const founder = asAddress(body.founder, "founder");
+      const finance = asAddress(body.finance, "finance");
+      const company = founderCompanyAddress(founder);
+      const existing = await new Connection(BASE_RPC, "confirmed").getAccountInfo(new PublicKey(company), "confirmed");
+      if (existing) return reply(res, 200, { status: "shell_exists", company });
+      const transaction = await buildOperation({ operation: "initializeCompany", actor: founder,
+        finance, mint: DEVNET_USDC }, { company, founder });
+      return reply(res, 200, { status: "sign", company, mint: DEVNET_USDC, transaction });
+    }
+    if (req.method === "POST" && req.url === "/v1/companies/bootstrap/submit") {
+      const body = await readJson(req);
+      const founder = asAddress(body.founder, "founder");
+      const finance = asAddress(body.finance, "finance");
+      if (typeof body.signedTransactionBase64 !== "string") throw new Error("Signed bootstrap transaction is required");
+      const company = founderCompanyAddress(founder);
+      const expected = await buildOperation({ operation: "initializeCompany", actor: founder,
+        finance, mint: DEVNET_USDC }, { company, founder });
+      const verified = validateSignedCompanyBootstrap({ expectedTransactionBase64: expected.transactionBase64,
+        signedTransactionBase64: body.signedTransactionBase64, founder });
+      const connection = new Connection(BASE_RPC, "confirmed");
+      const existing = await connection.getAccountInfo(new PublicKey(company), "confirmed");
+      if (existing) return reply(res, 200, { status: "shell_exists", company, signature: verified.signature });
+      let broadcast: "submitted" | "uncertain" = "submitted";
+      try {
+        const returned = await connection.sendRawTransaction(verified.bytes, { maxRetries: 3 });
+        if (returned !== verified.signature) throw new Error("RPC returned another signature");
+      } catch { broadcast = "uncertain"; }
+      return reply(res, 200, { status: "pending", company, signature: verified.signature, broadcast,
+        note: "Check the on-chain shell before registering or preparing another transaction." });
+    }
+    if (req.method === "GET" && req.url?.startsWith("/v1/companies/bootstrap/status?")) {
+      const url = new URL(req.url, "http://mercury.local");
+      const founder = asAddress(url.searchParams.get("founder"), "founder");
+      const company = founderCompanyAddress(founder);
+      const connection = new Connection(BASE_RPC, "confirmed");
+      const account = await connection.getAccountInfo(new PublicKey(company), "confirmed");
+      const signature = url.searchParams.get("signature");
+      const state = signature ? (await connection.getSignatureStatuses([signature],
+        { searchTransactionHistory: true })).value[0] : null;
+      return reply(res, 200, { company, shellExists: account !== null,
+        signatureStatus: !signature ? null : !state ? "not_found" : state.err ? "failed" :
+          state.confirmationStatus === "confirmed" || state.confirmationStatus === "finalized" ? "confirmed" : "processed" });
     }
     // Resolve the per-request company before any route runs. Every route below
     // sees the shadowed companyAddress/founderAddress for THIS company only.
@@ -519,6 +573,14 @@ createServer(async (req, res) => {
     const companyAddress = companyContext.company;
     const founderAddress = companyContext.founder;
     await ensureCompanyHydrated(companyAddress);
+    if (req.method === "GET" && routePath === "/v1/company-context") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const actor = asAddress(requestUrl.searchParams.get("actor"), "actor");
+      assertTeeTokenActor(token, actor);
+      return reply(res, 200, { company: companyAddress, founder: founderAddress,
+        mint: companyContext.mint, validator: companyContext.validator });
+    }
     if (req.method === "POST" && routePath === "/v1/auth/tee-login/challenge") {
       return reply(res, 200, { ...await createTeeLoginChallenge({ wallet: parsedBody!.wallet }),
         company: companyAddress });
@@ -682,6 +744,31 @@ createServer(async (req, res) => {
         receiptId: receipt.id, transaction, next: `/v1/team-grants/${grantAddress}/revoke/next`,
         cleanup: { endpoint: cleanup, body: cleanupBody } });
     }
+    if (req.method === "POST" && routePath?.startsWith("/v1/onboarding/receipts/") && routePath.endsWith("/submit")) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const id = routePath.slice("/v1/onboarding/receipts/".length, -"/submit".length);
+      const body = await readJson(req);
+      if (typeof body.signedTransactionBase64 !== "string") throw new Error("signedTransactionBase64 is required");
+      // Local signature and message verification does not depend on an RPC
+      // status lookup. A retry can only submit the same receipt-bound bytes.
+      const verified = validateSignedOnboardingReceipt(id, companyAddress, body.signedTransactionBase64);
+      let receipt = verified.receipt;
+      if (receipt.status === "failed") return reply(res, 200, { receipt, broadcast: "failed" });
+      if (receipt.status === "confirmed") return reply(res, 200, { receipt, broadcast: "already_confirmed" });
+      let broadcast = "submitted";
+      try {
+        const connection = receipt.chain === "base"
+          ? new Connection(process.env.MERCURY_BASE_SUBMIT_RPC ?? BASE_RPC, "confirmed") : teeConnection(token);
+        const signature = await connection.sendRawTransaction(verified.bytes, {
+          skipPreflight: receipt.chain === "ephemeral", maxRetries: 3,
+        });
+        if (signature !== verified.signature) throw new Error("RPC returned a different signature");
+      } catch { broadcast = "uncertain"; }
+      try { receipt = await confirmOnboardingReceipt(id, body.signedTransactionBase64, token); }
+      catch { broadcast = "uncertain"; }
+      return reply(res, 200, { receipt, broadcast });
+    }
     if (req.method === "POST" && routePath?.startsWith("/v1/onboarding/receipts/") && routePath.endsWith("/confirm")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
@@ -743,6 +830,34 @@ createServer(async (req, res) => {
         chain: result.transaction.sendTo, transactionBase64: result.transaction.transactionBase64,
       });
       return reply(res, 200, { ...result, receiptId: receipt.id });
+    }
+    if (req.method === "POST" && routePath === "/v1/onboarding/agent/next") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== founderAddress) throw new Error("Founder must configure agent policy");
+      assertTeeTokenActor(token, actor);
+      const result = await inspectAgentOnboarding({ company: companyAddress, founder: founderAddress,
+        agent: body.agent, recipient: body.recipient, perPaymentCapMicro: body.perPaymentCapMicro,
+        periodCapMicro: body.periodCapMicro, teeToken: token });
+      if (result.next.status !== "build") return reply(res, 200, result);
+      const operation = result.next.operation!;
+      let prior = latestOnboardingReceipt(companyAddress, result.agentPolicyAddress, operation);
+      if (prior?.status === "built") prior = await expireUnsignedOnboardingReceipt(prior.id, companyAddress, token);
+      if (prior && (prior.status === "built" || prior.status === "pending" || prior.status === "confirmed")) {
+        return reply(res, 200, { ...result, next: { status: "wait", operation: null,
+          reason: "Reconcile the prior agent policy receipt before continuing" },
+          receiptId: prior.id, receiptStatus: prior.status });
+      }
+      const transaction = await buildOperation({ operation, actor, agent: body.agent,
+        agentPolicy: result.agentPolicyAddress, recipient: body.recipient,
+        perPaymentCapMicro: body.perPaymentCapMicro, periodCapMicro: body.periodCapMicro },
+      { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = await recordOnboardingBuild({ company: companyAddress,
+        target: result.agentPolicyAddress, operation, chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
     }
     if (req.method === "POST" && routePath === "/v1/onboarding/company-funding/next") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || companyContext.mint !== DEVNET_USDC) {
@@ -922,7 +1037,8 @@ createServer(async (req, res) => {
       return reply(res, 200, { status: confirmedCount === scan.targets.length ? "ready" : "cleanup_required",
         ...scan, totalTargets: scan.targets.length, confirmedCount, pending });
     }
-    if (req.method === "POST" && routePath === "/v1/access/request-viewer/build") {
+    if (req.method === "POST" && (routePath === "/v1/access/request-viewer/build" ||
+        routePath === "/v1/access/request-viewer/next")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -959,13 +1075,39 @@ createServer(async (req, res) => {
           throw new Error("Active requester grant is required to keep requester access");
         }
       }
+      const readers = (await recordedPaymentFlowReaders(companyAddress)).get(requestAddress);
+      if (!readers) throw new Error("Request reader scope is unavailable; sharing would replace unknown private readers");
+      const activeGrants = (await listTeamMembers(companyAddress, token)).flatMap((entry) => entry.grants);
+      const branchScope = requestBranchScope(new PublicKey(companyAddress), String(request.id)).toBase58();
+      const includeFinance = readers.includeFinance && request.requester !== policy.finance &&
+        activeGrants.some((grant) => grant.member === policy.finance && grant.role === 1 &&
+          grant.grantor === founderAddress && grant.active === true && grant.revoked === false);
+      const manager = readers.manager && !(body.includeRequester && readers.manager === request.requester) &&
+        activeGrants.some((grant) => grant.member === readers.manager &&
+        grant.role === 2 && grant.scope === branchScope && grant.active === true && grant.revoked === false)
+        ? readers.manager : null;
+      if (viewer === manager) throw new Error("Viewer wallet is already the Manager reader");
       const transaction = await buildOperation({ operation: "setRequestReadersV2",
         actor: founderAddress, request: requestAddress, includeRequester: body.includeRequester,
-        includeFinance: false, manager: null, viewer, viewerGrant: viewerGrantAddress,
+        includeFinance, manager, viewer, viewerGrant: viewerGrantAddress,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      if (routePath === "/v1/access/request-viewer/next") {
+        const operation = `shareViewer:${viewer}:${body.includeRequester}`;
+        const prior = latestOnboardingReceipt(companyAddress, requestAddress, operation);
+        if (prior && (prior.status === "built" || prior.status === "pending")) {
+          return reply(res, 200, { status: "wait", request: requestAddress,
+            viewer, receiptId: prior.id, receiptStatus: prior.status });
+        }
+        const receipt = await recordOnboardingBuild({ company: companyAddress,
+          target: requestAddress, operation, chain: transaction.sendTo,
+          transactionBase64: transaction.transactionBase64 });
+        return reply(res, 200, { status: "build", request: requestAddress,
+          viewer, transaction, receiptId: receipt.id });
+      }
       return reply(res, 200, { status: "unsigned", request: requestAddress, viewer, transaction });
     }
-    if (req.method === "POST" && routePath === "/v1/access/policy-readers/restore/build") {
+    if (req.method === "POST" && (routePath === "/v1/access/policy-readers/restore/build" ||
+        routePath === "/v1/access/policy-readers/restore/next")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("Founder TEE auth token required");
       const body = await readJson(req);
@@ -981,6 +1123,19 @@ createServer(async (req, res) => {
       const transaction = await buildOperation({ operation: "restorePolicyReaders",
         actor: founderAddress, grant: grantAddress,
       }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      if (routePath === "/v1/access/policy-readers/restore/next") {
+        let prior = latestOnboardingReceipt(companyAddress, companyAddress, `restorePolicyReaders:${grantAddress}`);
+        if (prior?.status === "built") prior = await expireUnsignedOnboardingReceipt(prior.id, companyAddress, token);
+        if (prior && (prior.status === "built" || prior.status === "pending")) {
+          return reply(res, 200, { status: "wait", grant: grantAddress,
+            receiptId: prior.id, receiptStatus: prior.status });
+        }
+        const receipt = await recordOnboardingBuild({ company: companyAddress, target: companyAddress,
+          operation: `restorePolicyReaders:${grantAddress}`, chain: transaction.sendTo,
+          transactionBase64: transaction.transactionBase64 });
+        return reply(res, 200, { status: "build", grant: grantAddress,
+          transaction, receiptId: receipt.id });
+      }
       return reply(res, 200, { status: "unsigned", grant: grantAddress, transaction });
     }
     if (req.method === "POST" && routePath === "/v1/assistant/challenge") {
@@ -1401,6 +1556,32 @@ createServer(async (req, res) => {
         transaction: { status: "unsigned", operation: "approvePayroll", transactionBase64,
           requiredSigners: [actor], sendTo: "ephemeral", sendRpcEndpoint: TEE_RPC } });
     }
+    const rejectFlow = routePath?.match(/^\/v1\/payment-flows\/([^/?]+)\/reject$/);
+    if (req.method === "POST" && rejectFlow) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      const flow = await getPaymentFlow(rejectFlow[1], companyAddress);
+      const operation = flowReceiptOperation(flow, "rejectPayment");
+      const current = await readPaymentRequest(companyAddress, flow.request, token);
+      if (current.status === "rejected") return reply(res, 200, { status: "ready", request: flow.request });
+      if (current.status !== "submitted") throw new Error("Only a submitted payment can be rejected");
+      // Use the same Founder/Finance/Manager scope checks as approval before
+      // building the contract's rejection instruction.
+      await approvalPlan(companyContext, flow.request, actor, body.grant, body.parentGrant, token);
+      const previous = latestOnboardingReceipt(companyAddress, flow.request, operation);
+      if (previous && (previous.status === "built" || previous.status === "pending" || previous.status === "confirmed")) {
+        return reply(res, 200, { status: "wait", request: flow.request,
+          receiptId: previous.id, receiptStatus: previous.status });
+      }
+      const transaction = await buildOperation({ operation: "rejectPayment", actor, request: flow.request,
+        grant: body.grant, parentGrant: body.parentGrant },
+      { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target: flow.request,
+        operation, chain: transaction.sendTo, transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { status: "build", request: flow.request, receiptId: receipt.id, transaction });
+    }
     const paymentFlow = routePath?.match(/^\/v1\/payment-flows\/([^/?]+)(?:\/next)?$/);
     if (paymentFlow && req.method === "GET" && !routePath?.endsWith("/next")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
@@ -1411,6 +1592,12 @@ createServer(async (req, res) => {
         paymentId: flow.paymentId, request: flow.request, requestId: flow.requestId, requester: flow.requester,
         ...inspected,
       };
+      if (inspected.observation.privateReady) {
+        const privateRequest = await readPaymentRequest(companyAddress, flow.request, token);
+        result.terms = { requester: flow.requester, recipient: privateRequest.recipient,
+          amountMicro: privateRequest.amountMicro, includeFinance: flow.includeFinance ?? true,
+          manager: flow.manager ?? null, branchId: flow.branchId ?? null };
+      }
       if (["approved", "executed", "rejected"].includes(inspected.observation.status)) {
         const record = await registerPayment({ paymentId: flow.paymentId, company: companyAddress,
           request: flow.request, requester: flow.requester, requestId: flow.requestId });
@@ -1768,11 +1955,94 @@ createServer(async (req, res) => {
       const grant = decodeURIComponent(routePath.slice("/v1/team-grants/".length));
       return reply(res, 200, await readTeamGrant(companyAddress, grant, token));
     }
+    if (req.method === "GET" && routePath === "/v1/agent-policies") {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      return reply(res, 200, { policies: await listVisibleAgentPolicies(companyAddress, token) });
+    }
     if (req.method === "GET" && routePath?.startsWith("/v1/agent-policies/")) {
       const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
       if (!token) throw new Error("TEE auth token required");
       const agentPolicy = decodeURIComponent(routePath.slice("/v1/agent-policies/".length));
       return reply(res, 200, await readAgentPolicy(companyAddress, agentPolicy, token));
+    }
+    const revokeAgentRoute = routePath?.match(/^\/v1\/agent-policies\/([^/?]+)\/revoke\/next$/);
+    if (req.method === "POST" && revokeAgentRoute) {
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      if (actor !== founderAddress) throw new Error("Founder must revoke agent policy");
+      assertTeeTokenActor(token, actor);
+      const agentPolicyAddress = asAddress(decodeURIComponent(revokeAgentRoute[1]), "agentPolicy");
+      const policy = await readAgentPolicy(companyAddress, agentPolicyAddress, token);
+      if (policy.founder !== founderAddress) throw new Error("Agent policy belongs to another Founder");
+      if (policy.revoked === true) return reply(res, 200, { status: "ready", agentPolicyAddress });
+      let prior = latestOnboardingReceipt(companyAddress, agentPolicyAddress, "revokeAgent");
+      if (prior?.status === "built") prior = await expireUnsignedOnboardingReceipt(prior.id, companyAddress, token);
+      if (prior && (prior.status === "built" || prior.status === "pending" || prior.status === "confirmed")) {
+        return reply(res, 200, { status: "wait", agentPolicyAddress,
+          receiptId: prior.id, receiptStatus: prior.status });
+      }
+      const transaction = await buildOperation({ operation: "revokeAgent", actor,
+        agentPolicy: agentPolicyAddress }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = await recordOnboardingBuild({ company: companyAddress,
+        target: agentPolicyAddress, operation: "revokeAgent", chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { status: "build", agentPolicyAddress,
+        receiptId: receipt.id, transaction });
+    }
+    const agentMoneyRoute = routePath?.match(/^\/v1\/agent-policies\/([^/?]+)\/(fund|reclaim|pay)\/next$/);
+    if (req.method === "POST" && agentMoneyRoute) {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || companyContext.mint !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Agent token transfers require the verified Circle devnet USDC token CPI flow" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("TEE auth token required");
+      const body = await readJson(req);
+      const actor = asAddress(body.actor, "actor");
+      assertTeeTokenActor(token, actor);
+      const agentPolicyAddress = asAddress(decodeURIComponent(agentMoneyRoute[1]), "agentPolicy");
+      const kind = agentMoneyRoute[2] as "fund" | "reclaim" | "pay";
+      const policy = await readAgentPolicy(companyAddress, agentPolicyAddress, token);
+      if (policy.founder !== founderAddress || policy.mint !== companyContext.mint) {
+        throw new Error("Agent policy does not belong to this company");
+      }
+      if (kind === "pay" ? actor !== policy.agent : actor !== founderAddress) {
+        throw new Error(kind === "pay" ? "Only the configured agent can pay" : "Only the Founder can move agent float");
+      }
+      if (kind !== "reclaim" && policy.revoked !== false) throw new Error("Agent policy is revoked");
+      const amountMicro = asMicroAmount(body.amountMicro);
+      const actionId = body.actionId;
+      if (typeof actionId !== "string" || !/^[a-zA-Z0-9_-]{1,48}$/.test(actionId)) {
+        throw new Error("actionId must be 1 to 48 letters, digits, underscores, or hyphens");
+      }
+      const target = `${agentPolicyAddress}:${actionId}`;
+      const operation = kind === "fund" ? "fundAgentFloat" : kind === "reclaim" ? "reclaimAgentFloat" : "agentPay";
+      const operationKey = `${operation}:${actor}:${amountMicro}:${policy.allowedRecipient}`;
+      if (listOnboardingReceipts(companyAddress).some((receipt) =>
+        receipt.target === target && receipt.operation !== operationKey)) {
+        throw new Error("Agent action ID is already bound to different payment terms");
+      }
+      let prior = latestOnboardingReceipt(companyAddress, target, operationKey);
+      if (prior?.status === "confirmed") return reply(res, 200, { status: "ready", agentPolicyAddress,
+        actionId, receiptId: prior.id });
+      if (prior?.status === "built") prior = await expireUnsignedOnboardingReceipt(prior.id, companyAddress, token);
+      if (prior && (prior.status === "built" || prior.status === "pending")) {
+        return reply(res, 200, { status: "wait", agentPolicyAddress,
+          actionId, receiptId: prior.id, receiptStatus: prior.status });
+      }
+      const accounts = kind === "pay" ? agentPaymentAccounts(companyAddress, actor, policy, amountMicro) : null;
+      const transaction = await buildOperation({ operation, actor, agentPolicy: agentPolicyAddress,
+        amountMicro,
+        ...(accounts ? { agentFloatToken: accounts.agentFloatToken, recipientToken: accounts.recipientToken } : {
+          treasuryToken: canonicalTokenAccount(companyAddress, companyContext.mint),
+          agentFloatToken: canonicalTokenAccount(agentPolicyAddress, companyContext.mint),
+        }) }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target,
+        operation: operationKey, chain: transaction.sendTo, transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { status: "build", agentPolicyAddress, actionId,
+        recipient: accounts?.recipient ?? null, receiptId: receipt.id, transaction });
     }
     if (req.method === "POST" && routePath?.startsWith("/v1/agents/") && routePath.endsWith("/build-payment")) {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS !== "1" || companyContext.mint !== DEVNET_USDC) {
@@ -1838,6 +2108,29 @@ createServer(async (req, res) => {
         privacy: body.privacy,
       });
       return reply(res, 200, { status: "unsigned", recipient, transaction });
+    }
+    if (req.method === "POST" && routePath === "/v1/onboarding/recipient-withdraw/next") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_WITHDRAW !== "1") {
+        return reply(res, 503, { error: "Recipient withdrawal is gated until the configured mint is verified" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Recipient TEE auth token required");
+      const body = await readJson(req);
+      const owner = asAddress(body.owner, "owner");
+      assertTeeTokenActor(token, owner);
+      if (typeof body.withdrawalId !== "string" || !/^[a-zA-Z0-9_-]{1,48}$/.test(body.withdrawalId)) {
+        throw new Error("withdrawalId must be 1 to 48 letters, digits, underscores, or hyphens");
+      }
+      const amountMicro = asMicroAmount(body.amountMicro);
+      const target = `${owner}:${body.withdrawalId}`;
+      const prior = latestOnboardingReceipt(companyAddress, target, "recipientWithdraw");
+      if (prior) return reply(res, 200, { status: prior.status === "confirmed" ? "ready" : "wait_for_receipt",
+        receiptId: prior.id, receiptStatus: prior.status, transaction: null });
+      const transaction = await prepareRecipientWithdrawal({ owner, mint: companyContext.mint,
+        amountMicro, validator: TEE_VALIDATOR.toBase58(), cluster: process.env.MAGICBLOCK_CLUSTER ?? "devnet-private" });
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target,
+        operation: "recipientWithdraw", chain: "base", transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { status: "sign_withdrawal", receiptId: receipt.id, transaction });
     }
     if (req.method === "POST" && routePath === "/v1/recipient-withdraw/build") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_WITHDRAW !== "1") {

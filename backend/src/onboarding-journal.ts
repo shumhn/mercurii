@@ -94,6 +94,23 @@ function firstVerifiedSignature(transaction: Transaction | VersionedTransaction)
   return transaction.signatures[0] ?? null;
 }
 
+/** Check an exact signed receipt without relying on a status RPC before broadcast. */
+export function validateSignedOnboardingReceipt(id: string, company: string, signedTransactionBase64: string): {
+  bytes: Buffer; signature: string; receipt: Receipt;
+} {
+  const receipt = getOnboardingReceipt(id, company);
+  if (receipt.status === "expired") throw new Error("Onboarding transaction expired; build a new step");
+  const bytes = Buffer.from(signedTransactionBase64, "base64");
+  const transaction = deserialize(bytes);
+  const signature = firstVerifiedSignature(transaction);
+  if (messageId(transaction) !== id || !signature) {
+    throw new Error("Signed transaction does not match the prepared onboarding step");
+  }
+  const signatureText = bs58.encode(signature);
+  if (receipt.signature && receipt.signature !== signatureText) throw new Error("Receipt already has another signature");
+  return { bytes, signature: signatureText, receipt };
+}
+
 export function recordOnboardingBuild(args: {
   company: string; target: string; operation: string;
   chain: "base" | "ephemeral"; transactionBase64: string;
@@ -189,14 +206,7 @@ export async function confirmOnboardingReceipt(id: string, signedTransactionBase
   if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Invalid receipt ID");
   const receipt = readJournal().receipts.find((item) => item.id === id);
   if (!receipt) throw new Error("Unknown onboarding receipt");
-  if (receipt.status === "expired") throw new Error("Onboarding transaction expired; build a new step");
-  const transaction = deserialize(Buffer.from(signedTransactionBase64, "base64"));
-  const signature = firstVerifiedSignature(transaction);
-  if (messageId(transaction) !== id || !signature) {
-    throw new Error("Signed transaction does not match the prepared onboarding step");
-  }
-  const signatureText = bs58.encode(signature);
-  if (receipt.signature && receipt.signature !== signatureText) throw new Error("Receipt already has another signature");
+  const { signature: signatureText } = validateSignedOnboardingReceipt(id, receipt.company, signedTransactionBase64);
   const connection = receipt.chain === "base"
     ? new Connection(process.env.MERCURY_BASE_SUBMIT_RPC ?? "https://api.devnet.solana.com", "confirmed")
     : teeConnection(teeToken);

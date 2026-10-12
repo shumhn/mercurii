@@ -19,9 +19,12 @@ export type TeamMember = {
 export async function listTeamMembers(companyInput: unknown, teeToken: string): Promise<TeamMember[]> {
   if (!teeToken) throw new Error("TEE auth token required");
   const company = asAddress(companyInput, "company");
-  await readCompanyPolicy(company, teeToken);
+  // Requesters and Viewers may read their own grant without permission to
+  // read the company policy. Their roster is intentionally only the set of
+  // grants PER allows this token to fetch.
+  const canReadPolicy = await readCompanyPolicy(company, teeToken).then(() => true, () => false);
   const accounts = await teeConnection(teeToken).getProgramAccounts(PROGRAM_ID);
-  if (!accounts.some(({ pubkey }) => pubkey.toBase58() === company)) {
+  if (canReadPolicy && !accounts.some(({ pubkey }) => pubkey.toBase58() === company)) {
     throw new Error("PER scan did not include the company policy; member list may be incomplete");
   }
   const grants: Record<string, unknown>[] = [];
@@ -35,6 +38,9 @@ export async function listTeamMembers(companyInput: unknown, teeToken: string): 
       // The caller may see an account in the scan but lack direct read access.
       // Never return its decoded confidential terms from the scan result.
     }
+  }
+  if (!canReadPolicy && grants.length === 0) {
+    throw new Error("No private company grants are accessible to this wallet");
   }
   const byMember = new Map<string, TeamMember>();
   for (const grant of grants) {

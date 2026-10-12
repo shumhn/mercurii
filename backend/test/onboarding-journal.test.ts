@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { confirmOnboardingReceipt, confirmedOnboardingStep, expireUnsignedOnboardingReceipt, getOnboardingReceipt, listOnboardingReceipts,
   reconcileOnboardingReceipt, recordOnboardingBuild,
-  waitForCleanupReceipt, hasConfirmedRecipientDeposit } from "../src/onboarding-journal.ts";
+  waitForCleanupReceipt, hasConfirmedRecipientDeposit, validateSignedOnboardingReceipt } from "../src/onboarding-journal.ts";
 
 test("onboarding journal binds an unsigned build to its exact signed message", async () => {
   const directory = mkdtempSync(join(tmpdir(), "mercury-onboarding-"));
@@ -45,6 +45,10 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
     await assert.rejects(() => confirmOnboardingReceipt(receipt.id,
       different.serialize().toString("base64"), ""), /does not match/);
     tx.sign(founder);
+    const signedBase64 = tx.serialize().toString("base64");
+    assert.equal(validateSignedOnboardingReceipt(receipt.id, receipt.company, signedBase64).receipt.status, "built");
+    assert.throws(() => validateSignedOnboardingReceipt(receipt.id, recipient.toBase58(), signedBase64), /Unknown/);
+    assert.throws(() => validateSignedOnboardingReceipt(receipt.id, receipt.company, different.serialize().toString("base64")), /does not match/);
     const confirmed = await confirmOnboardingReceipt(receipt.id, tx.serialize().toString("base64"),
       "token", async () => ({ err: null, confirmationStatus: "confirmed" }));
     assert.equal(confirmed.status, "confirmed");
