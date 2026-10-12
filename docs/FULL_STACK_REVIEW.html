@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Mercurii full-stack review</title>
+  <style>
+    :root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#111827;background:#f5f7fb}
+    body{margin:0;padding:40px 20px}.page{max-width:1080px;margin:auto;background:white;border:1px solid #e5e7eb;border-radius:20px;padding:36px;box-shadow:0 18px 55px rgba(15,23,42,.08)}
+    h1{font-size:34px;margin:0 0 8px}h2{margin-top:34px}p{line-height:1.6;color:#4b5563}.scores{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:26px 0}
+    .score{border:1px solid #dbe3f0;border-radius:14px;padding:18px}.score strong{display:block;font-size:28px;color:#0b44fe}.score span{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#64748b}
+    table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #e5e7eb;padding:13px 10px}th{color:#475569;background:#f8fafc}.high{color:#b42318;font-weight:700}.medium{color:#b54708;font-weight:700}.low{color:#475467;font-weight:700}
+    .good{color:#067647}.warn{color:#b54708}.bad{color:#b42318}.note{border-left:4px solid #0b44fe;background:#eff4ff;padding:14px 18px;border-radius:8px;margin-top:24px}
+    @media(max-width:760px){.scores{grid-template-columns:1fr 1fr}.page{padding:24px 16px}table{font-size:12px}}
+  </style>
+</head>
+<body><main class="page">
+  <h1>Mercurii full-stack review</h1>
+  <p>12 October 2026 · Review of the connected Next.js workspace, Mercury HTTP service, encrypted Supabase operations, Anchor program, and MagicBlock PER/private-payment boundary.</p>
+  <div class="scores">
+    <div class="score"><strong>B</strong><span>Security</span></div>
+    <div class="score"><strong>B</strong><span>Quality</span></div>
+    <div class="score"><strong class="bad">No</strong><span>Mainnet ready</span></div>
+    <div class="score"><strong class="good">118</strong><span>Passing tests</span></div>
+  </div>
+  <div class="note"><strong>Current position:</strong> the full application surface is wired and the encrypted database coverage is complete for current local records. The current runtime deliberately disables receive, payment execution, Finance Agent, x402, and recipient withdrawal, and the wallet role matrix still needs browser replay.</div>
+  <h2>Verification evidence</h2>
+  <table><thead><tr><th>Layer</th><th>Evidence</th><th>Result</th></tr></thead><tbody>
+    <tr><td>Frontend</td><td>Next production build; signed-out navigation across all 12 workspace sections</td><td class="good">Pass</td></tr>
+    <tr><td>Backend</td><td>114 automated tests</td><td class="good">Pass</td></tr>
+    <tr><td>Program</td><td>2 unit tests; signer/PDA/checked arithmetic scan</td><td class="warn">Pass with warnings</td></tr>
+    <tr><td>Database</td><td>Supabase health and encrypted coverage for all current operational records</td><td class="good">Pass</td></tr>
+    <tr><td>Live browser/devnet</td><td>Wallet-signed Founder/Finance/Manager/member flows</td><td class="warn">Pending</td></tr>
+  </tbody></table>
+  <h2>Actionable findings</h2>
+  <table><thead><tr><th>Severity</th><th>Finding</th><th>Specific fix</th></tr></thead><tbody>
+    <tr><td class="high">High</td><td>All five live money/agent capability flags are off.</td><td>Validate the current devnet mint and PER endpoint, enable one flag at a time, then replay its exact wallet-signed flow.</td></tr>
+    <tr><td class="high">High</td><td>The role-by-role browser matrix is not complete.</td><td>Replay Founder, Finance, Manager, Requester/Agent, Viewer, and recipient sessions with allowed and denied actions.</td></tr>
+    <tr><td class="medium">Medium</td><td>Frontend automated coverage has only two formatting tests.</td><td>Add interaction tests for role navigation, session clearing, payment state, and receipt retry/reconciliation.</td></tr>
+    <tr><td class="medium">Medium</td><td>Audit-share and x402 dedicated repositories remain local-first.</td><td>Add database-primary optimistic-concurrency repositories and recovery coverage.</td></tr>
+    <tr><td class="medium">Medium</td><td>No external custody-program audit or fuzz campaign.</td><td>Fuzz authorization, conservation, one-shot execution, and CPI account bindings before mainnet.</td></tr>
+    <tr><td class="low">Low</td><td>An unused mock workspace remains in the frontend tree.</td><td>Remove or archive it after confirming it is no longer a design reference.</td></tr>
+    <tr><td class="low">Low</td><td>Anchor/Solana macro cfg warnings remain.</td><td>Align the toolchain or explicitly gate/document the warning in CI.</td></tr>
+  </tbody></table>
+  <p>The complete small-function matrix lives in <code>docs/FULL_STACK_FUNCTIONALITY_MATRIX.md</code>.</p>
+</main></body></html>
