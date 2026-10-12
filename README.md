@@ -2,6 +2,12 @@
 
 Mercury is private USDC operations for onchain teams: a company treasury, payment approvals, and bounded agent spending. This repo is a **devnet implementation in progress**. It is not ready for real funds.
 
+## Run the local app
+
+After installing dependencies in `backend/` and `frontend/`, run `npm run dev` from the repository root. It starts the Next.js UI at `http://localhost:3999` and the private Mercury API at `127.0.0.1:8787`. The browser uses the Next.js `/api/mercurii/*` gateway, so UI requests stay on one origin. The backend loads `backend/.env.local` when present. `MERCURII_BACKEND_URL` can override the gateway target, and `MERCURII_WEB_PORT` can change the local UI port.
+
+This is one local launch command, not one server process. The current API still owns wallet challenge verification, payment receipts, encrypted Supabase records, and onchain transaction preparation. [The Next.js architecture note](docs/NEXT_APP_ARCHITECTURE.md) lists what must change before those routes can run safely as hosted Next.js functions.
+
 ## Current contract
 
 The Anchor program in `programs/mercury/src/lib.rs` has five PER state account types:

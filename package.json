@@ -1,0 +1,8 @@
+{
+  "name": "mercurii-workspace",
+  "private": true,
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "check": "npm --prefix backend run typecheck && npm --prefix frontend run build"
+  }
+}
