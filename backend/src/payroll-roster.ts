@@ -2,7 +2,8 @@ import { PublicKey } from "@solana/web3.js";
 import { asAddress } from "./magicblock.ts";
 
 export type RosterIssue = { row: number | null; message: string };
-export type RosterItem = { row: number; recipient: string; amountMicro: number; label: string | null };
+export type RosterItem = { row: number; recipient: string; amountMicro: number; label: string | null;
+  cadence?: "weekly" | "biweekly" | "monthly"; firstPayDate?: string };
 export type RosterPreview = { items: RosterItem[]; errors: RosterIssue[]; totalMicro: string; canCreateRun: boolean };
 
 function csvRows(text: string): string[][] {
@@ -52,6 +53,11 @@ export function previewPayrollCsv(input: unknown): RosterPreview {
   const walletIndex = headers.findIndex((value) => ["wallet", "wallet_address", "recipient", "address"].includes(value));
   const amountIndex = headers.findIndex((value) => ["amount_usdc", "amount"].includes(value));
   const labelIndex = headers.findIndex((value) => ["name", "label"].includes(value));
+  const cadenceIndex = headers.findIndex((value) => value === "cadence");
+  const firstDateIndex = headers.findIndex((value) => ["first_pay_date", "firstpaydate"].includes(value));
+  if ((cadenceIndex < 0) !== (firstDateIndex < 0)) {
+    throw new Error("Individual payroll needs both cadence and first_pay_date columns");
+  }
   if (walletIndex < 0 || amountIndex < 0) throw new Error("Payroll CSV needs wallet and amount_usdc columns");
   const items: RosterItem[] = [];
   const errors: RosterIssue[] = [];
@@ -93,8 +99,26 @@ export function previewPayrollCsv(input: unknown): RosterPreview {
       errors.push({ row: rowNumber, message: "Name is too long" });
       continue;
     }
+    let cadence: RosterItem["cadence"];
+    let firstPayDate: string | undefined;
+    if (cadenceIndex >= 0) {
+      const value = row[cadenceIndex]?.trim().toLowerCase();
+      if (value !== "weekly" && value !== "biweekly" && value !== "monthly") {
+        errors.push({ row: rowNumber, message: "Cadence must be weekly, biweekly, or monthly" });
+        continue;
+      }
+      cadence = value;
+      firstPayDate = row[firstDateIndex]?.trim();
+      const date = firstPayDate && /^\d{4}-\d{2}-\d{2}$/.test(firstPayDate)
+        ? new Date(`${firstPayDate}T00:00:00.000Z`) : null;
+      if (!date || !Number.isFinite(date.getTime()) || date.toISOString().slice(0, 10) !== firstPayDate) {
+        errors.push({ row: rowNumber, message: "first_pay_date must be a valid YYYY-MM-DD date" });
+        continue;
+      }
+    }
     total += micro;
-    items.push({ row: rowNumber, recipient, amountMicro: Number(micro), label });
+    items.push({ row: rowNumber, recipient, amountMicro: Number(micro), label,
+      ...(cadence ? { cadence, firstPayDate } : {}) });
   }
   return { items, errors, totalMicro: total.toString(),
     canCreateRun: errors.length === 0 && items.length >= 1 && items.length <= 100 };

@@ -25,3 +25,14 @@ test("payroll CSV reports invalid and duplicate rows before any run is created",
   assert.throws(() => previewPayrollCsv("wallet,name\nabc,A"), /amount_usdc/);
   assert.throws(() => previewPayrollCsv('wallet,amount_usdc\n"unterminated,1'), /Unclosed/);
 });
+
+test("individual payroll CSV validates cadence and each employee start date", () => {
+  const wallet = Keypair.generate().publicKey.toBase58();
+  const valid = previewPayrollCsv(`wallet,amount_usdc,name,cadence,first_pay_date\n${wallet},5,A,biweekly,2026-10-09\n`);
+  assert.equal(valid.canCreateRun, true);
+  assert.equal(valid.items[0]?.cadence, "biweekly");
+  assert.equal(valid.items[0]?.firstPayDate, "2026-10-09");
+  assert.equal(previewPayrollCsv(`wallet,amount_usdc,cadence,first_pay_date\n${wallet},5,daily,2026-10-09`).canCreateRun, false);
+  assert.equal(previewPayrollCsv(`wallet,amount_usdc,cadence,first_pay_date\n${wallet},5,weekly,2026-02-31`).canCreateRun, false);
+  assert.throws(() => previewPayrollCsv(`wallet,amount_usdc,cadence\n${wallet},5,weekly`), /both cadence/);
+});
