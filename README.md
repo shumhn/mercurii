@@ -30,7 +30,7 @@ Mercurii is a private USDC operating account for startups, agencies, and onchain
 | **Team access** | Give Founder, Finance, Manager, Requester, Viewer, and Agent wallets distinct scopes; revoke grants and clean up historical readers. |
 | **AI assistance** | Inspect authorized records and prepare drafts; separately funded agents have bounded payment rules when enabled. |
 
-**Current status:** This is a Solana devnet MVP with a Next.js workspace, separate noncustodial API, Anchor program, MagicBlock Private Ephemeral Rollup (PER), and encrypted operational storage. It is not audited or ready for real company funds. The running backend's capability flags determine which money-moving and agent features are available; the UI does not replace unavailable state with sample financial data.
+**Built on Solana devnet:** Mercurii combines a Next.js workspace, noncustodial API, Anchor program, MagicBlock Private Ephemeral Rollup (PER), and encrypted operational storage. The [signed transaction trail](#devnet-proof) shows a company funded with Circle devnet USDC, private request approval and execution, and a refreshed treasury snapshot. The running backend's capability flags determine which workflows are available in a new session.
 
 ## MagicBlock integration
 
@@ -216,27 +216,31 @@ flowchart LR
 | **Private USDC balances** | Company, recipient, and isolated agent float balances on the selected PER. |
 | **Mercurii API and Supabase** | Wallet challenge verification, unsigned transaction preparation, receipt recovery, and encrypted workflow records. The database is not spending authority. |
 
-### Privacy boundary
+### Privacy model
 
-Mercurii does **not** claim complete anonymity. Program and account addresses, public shell creation, delegation, and some base-layer funding or withdrawal activity remain observable. A base-layer payer, amount, and timing may be visible or inferable. The PER protects sensitive operating state and limits its readers; a treasury snapshot may be stale until an authorized wallet signs a refresh. Permission changes and revocations must be confirmed, and historical reader cleanup must complete before treating access as removed.
+Mercurii keeps company operating details in permissioned PER accounts: balances, requests, recipients, amounts, grants, and spending policy are shared with the wallets authorized for each record. Solana devnet continues to record public account creation, delegation, and the base-layer legs of funding or withdrawal. An authorized wallet signs a snapshot refresh to bring the displayed treasury balance up to date; access changes follow confirmed permission updates and reader cleanup.
 
 ## Devnet proof
 
-The [deployed Mercury program](https://explorer.solana.com/address/34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L?cluster=devnet) and its generated [IDL](backend/idl/mercury.json) are listed below.
+### One company, complete private payment sequence
 
-These transactions show one recorded MagicBlock payment-request sequence. The first two steps use Solana devnet to create and delegate a public shell. The remaining links use the MagicBlock TEE devnet endpoint. They demonstrate the request through private approval and snapshot sync; execution is evidenced separately below.
+The [Mercury program](https://explorer.solana.com/address/34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L?cluster=devnet) and [IDL](backend/idl/mercury.json) make the instructions inspectable. Here is the signed trail for **one newly created Circle devnet USDC company** (`3zsx7iDanqWV2gHPh7UXARkmASveUeipG82C5YGe5vhn`). The private links open Solana Explorer against MagicBlock's custom TEE endpoint. The listed receive, execution, and final snapshot signatures were independently rechecked as finalized on their respective RPCs.
 
-| Step | Network | Proof |
+| Stage | Verified action | Explorer proof |
 | --- | --- | --- |
-| Create request shell | Solana devnet | [Transaction](https://explorer.solana.com/tx/2qD47V692yWJfwPi3vJZsr6vBmoite55m4zkbjDHSEjsum6npZCtCyqDivZtPFVKrotoSe2xgipk5PA7ir5DDFYr?cluster=devnet) |
-| Delegate request | Solana devnet | [Transaction](https://explorer.solana.com/tx/TnnrvjxM9CgLZCjTUSGriGEsL97EAKSe96UnqZpdhzGS8hYZ2A82FF4JCGYiX4xW4YJFGZQ3PC1JzihcYKAAoPN?cluster=devnet) |
-| Create PER request permission | MagicBlock PER | [Transaction](https://explorer.solana.com/tx/bDkZEJgxbQgx7PRb5mgcBteZPKY6r8ZgCBFsEM5B9DrvVhS9Eh2wKWj4iPcwgBnJRXXwVNFs3D7pkVgkw5z8w6Z?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
-| Activate private readers | MagicBlock PER | [Transaction](https://explorer.solana.com/tx/62Sv7iqZDYNENwHLEJr51CYPHrqBne1i7xw35go77ryY2BsAByaKRynU7MQsFAbKrGAgaSZZnsSrwqZ8WVj5TmbG?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
-| Submit private request | MagicBlock PER | [Transaction](https://explorer.solana.com/tx/ZtuE8o9wuwZzZFU1U5vpetoa9GhZkSfcuxTy5wu7tEmL7mw25HC3ejHcj8VLXGZVmRtf4ECyKf4noFNNnpGQn9y?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
-| Approve private request | MagicBlock PER | [Transaction](https://explorer.solana.com/tx/5FG99DybKnmRMrXGqW7Mbwz4mVBQFkwEPWMbd7YTpiP5TXJf5UvNcCnMAMLgMsKtjk84XyuPQbw3cinSMGSxFLwV?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
-| Sync private snapshot | MagicBlock PER | [Transaction](https://explorer.solana.com/tx/c5U2Dk9CkNcjk7ehxKxf1TbWA96jeBuQNCSmEpxycPUaNtc9ZViprpSXp4YGqmFqGjdJA1Gmty7RhAJ9tABESeX?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Company setup | Initialize PER permission, activate private readers, set limits | [Permission](https://explorer.solana.com/tx/3HVdH6hFQuXwyiCByDY1rB4e93qTnVPNJWwMx54j7Vfem6hz6hkzsaLBzKhbtK9oDk6HhfaMLEYgrmgxoSQfRBNV?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) · [Privacy](https://explorer.solana.com/tx/3qhRBExzDJUikkD2TCbTgfzYdTtxzR3sHMLKKx1kKyr1Vy5VV8SfqU31fZwDHSSuasYsJFNd1f3VVWmVKioNwCk4?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) · [Limits](https://explorer.solana.com/tx/49NGCKhpogjABxxQU9qQugBWeCws6zDciTcXTek3WDmJqf7bSY9DsLFVx2StneXoxht6e6B93yCrGyrZzPbv7FjG?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Balance tracker | Initialize private snapshot permission and readers | [Permission](https://explorer.solana.com/tx/2wM9GkREm7Cjr3byahq2k5M1pa3QEiHqMxY8ta22bCRQjf9JM8cRgZfQCUS9KSBgiCCy9eTT3jbVArqTxKhgUHco?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) · [Privacy](https://explorer.solana.com/tx/5Dr4TxFoPQ5cHq3BmHc5kksuzdnzsf8gLw4zn9Tcb8YjhXRPrH6ZaPqmtFPZoZvBZuLEyo1k2dtxb4PRXg4JXLzD?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Receive USDC | Payer funds the company through MagicBlock Private Payments | [Private receive on Solana devnet](https://explorer.solana.com/tx/xgm9XwexWAXVPKR5y3knBWi1EPaCWxycp9NUEHyxwmUG4gjUZqiLSvPs72waR7SrHErMdxUmmUR3WEi7tPDWnNi?cluster=devnet) |
+| Treasury | Founder synchronizes the private balance | [Snapshot](https://explorer.solana.com/tx/2fiXqXzNdsDv2pDYCofSupv4x62yJPprP4wTxwVJjXGp7wKDT5LAKFJ56w93udibV8kTXJKc6Sh3HwuQvoDDCHNG?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Payment setup | Create PER-local permission and activate request privacy | [Permission](https://explorer.solana.com/tx/UwqzmfSB35FthMfVQpvabhA4zNHLR5YXqQzg1pBrpwk9Q4KvFDVyCnRqUdWW892zjj7pYjVuLh1GZhKy7GZ2Ssj?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) · [Privacy](https://explorer.solana.com/tx/4LvHCFnYWhHf77C4juFiDbrtwFh3hnHHJW8kUy4d4oKGSxzMsYmQaBL7zHjTeR8bsD6zfh28HbY4ZrA6uXrFs3qH?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Payment request | Submit the private recipient and amount | [Submission](https://explorer.solana.com/tx/2urqVYqtB76ZHG33zLSPgAXB7wwtFxyLpKeXw2DGMi7Vn7y2SqVNJM9oXR4DUZLE1eo7xtwrig9UyFRRU6NcM5QR?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Approval | Founder approves under company policy | [Approval](https://explorer.solana.com/tx/dLtyM6ckpDMvH7Cf66z6BeMKA52dPUGjXdAkpqMpCf9WJjyLfvpJBEZYf9Fiv4kCTH9AM38HLVYc5XmgWtcxbpj?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Execution | Program transfers private USDC and marks the request executed | [Execution](https://explorer.solana.com/tx/37VYbGscUSXFs7wqjf1i5rBwJrCz5CM6LejpXdfhHJti5NZNgwmzDPw6NX1HN8X4TkswhYGoRSSQ9BQ1B7CmuvwN?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
+| Reconciliation | Founder refreshes the private treasury snapshot | [Snapshot sync](https://explorer.solana.com/tx/2hpoGyWdyPvZfP8AwaK2G3BNbnPwVMj7B5fquniZcnfGsWRw7y7zyMdXUJ9YTJzmKn89ovvhrBcbJS9Y6V3vX8i5?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) |
 
-A separate guided Circle devnet USDC payment reached [private execution](https://explorer.solana.com/tx/37VYbGscUSXFs7wqjf1i5rBwJrCz5CM6LejpXdfhHJti5NZNgwmzDPw6NX1HN8X4TkswhYGoRSSQ9BQ1B7CmuvwN?cluster=devnet) and then [treasury snapshot refresh](https://explorer.solana.com/tx/2hpoGyWdyPvZfP8AwaK2G3BNbnPwVMj7B5fquniZcnfGsWRw7y7zyMdXUJ9YTJzmKn89ovvhrBcbJS9Y6V3vX8i5?cluster=devnet). See the [PER proof catalog](docs/magicblock-per-proof-catalog.md) for source receipts and the [historical implementation log](docs/DEVNET_IMPLEMENTATION_LOG.md) for additional payroll, team, recipient, and agent evidence.
+### Payroll, agents, and recipient proof
+
+**More verified Mercurii actions:** A [request shell delegation](https://explorer.solana.com/tx/TnnrvjxM9CgLZCjTUSGriGEsL97EAKSe96UnqZpdhzGS8hYZ2A82FF4JCGYiX4xW4YJFGZQ3PC1JzihcYKAAoPN?cluster=devnet) shows the public-to-PER handoff in another company flow. A nine-person payroll run has [eight approvals](https://explorer.solana.com/tx/56EJD3KHVV36bGZ4MAZDhiMjiJ9wL13HcH4ws78j5avg7HN4DweChg2tUsCUfbaPMjJMU6ybjx3WhnDWxiNTTP7A?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) followed by a [ninth approval](https://explorer.solana.com/tx/241VrkxaBChrefpHn4GWkbAi8RJaADi9uGy1qUpXQY7k38bPXvH3jydQpdVdamU6RSAFN4EKwDGtQcFAeCp3CBAW?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app). An Agent made a [capped private USDC payment](https://explorer.solana.com/tx/36iv6JU7B2a2YSxVKpn9Z6bh4B7N7nHWmw7fPV1dBikTcc6MYTgYV21mn71C16bZD3Ebfq9UPhQqW7QjbLdXJvWz?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app), and a recipient signed a [private-to-base USDC withdrawal](https://explorer.solana.com/tx/2r8fGya6fpM3xkRHkE9dXWk843BUur9vM5CLZQk6ebKUg7q6hufinfb7hJhqBoR9NKHSrHDeZvi4PdVDmZFmLMWo?cluster=devnet). These examples come from separate recorded devnet tests; the table above is the single-company payment sequence. The [PER proof catalog](docs/magicblock-per-proof-catalog.md) records 218 finalized PER signatures as of its 12 October 2026 export, and the [implementation log](docs/DEVNET_IMPLEMENTATION_LOG.md) explains the wider receipt history.
 
 ## On-chain program
 
@@ -301,8 +305,8 @@ cargo test -p mercury
 | [`supabase/migrations/`](supabase/migrations/) | Encrypted operations schema, record versions, and app indexes. |
 | [`docs/`](docs/) | Architecture, functionality audit, devnet proof catalog, and implementation history. |
 
-## Current limits
+## Devnet scope and next steps
 
-This is a devnet build. Browser flows for every role and every newly registered company still need full end-to-end replay. Payments and private balances require the correct backend flags, funded wallet, TEE access, and recipient setup. Snapshot refresh and payroll payouts require authorized signatures; schedules do not move money automatically. Base-layer funding and withdrawals can expose public metadata. Mainnet use requires operational recovery, broader failure testing, and an independent security review.
+Mercurii's devnet implementation is available for wallet-signed testing with test USDC. The next milestone is to replay the complete browser journey for each role and a newly registered company, with the correct capability flags, funded wallets, TEE access, and recipient setup. Snapshot refresh and payroll payouts use authorized signatures, keeping control with the company. Solana provides verifiable funding and withdrawal receipts while PER keeps the operating records permissioned. Mainnet deployment follows operational recovery work, broader failure testing, and an independent security review.
 
 For a feature-by-feature code and runtime assessment, see the [full-stack functionality matrix](docs/FULL_STACK_FUNCTIONALITY_MATRIX.md). For the program's privacy and custody design, see [architecture](docs/ARCHITECTURE.md).
