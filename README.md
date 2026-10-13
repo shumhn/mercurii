@@ -20,7 +20,7 @@
 
 ## Overview
 
-Mercurii is a private financial operations platform for stablecoin businesses on Solana. A Founder creates a company, activates private operations, receives stablecoins, and then invites people into scoped finance workflows. The workspace brings private treasury activity, invoices and payment requests, payroll, vendor payouts, approvals, settlement tracking, and bounded agent payments into one controlled flow. The current devnet implementation uses Circle USDC for its signed payment paths.
+Mercurii is a private financial operations platform for stablecoin businesses on Solana. A Founder creates a company, activates private operations, receives stablecoins, and then invites people into scoped finance workflows. The workspace brings private treasury activity, invoices and payment requests, payroll, vendor payouts, approvals, settlement tracking, and bounded agent payments into one controlled flow.
 
 | Capability | What the user can do |
 | --- | --- |
@@ -31,7 +31,7 @@ Mercurii is a private financial operations platform for stablecoin businesses on
 | **AI assistance** | Inspect authorized records, check invoices and budgets, and prepare unsigned drafts for human review. |
 | **x402 tool payments** | A Founder can authorize an agent to buy an approved API resource with a separate, limited wallet; the service, recipient, exact quote, and caps are checked before payment. |
 
-**Built on Solana devnet:** Mercurii combines a Next.js workspace, noncustodial API, Anchor program, MagicBlock Private Ephemeral Rollup (PER), and encrypted operational storage. The [signed transaction trail](#devnet-proof) shows a company funded with Circle devnet USDC, private request approval and execution, and a refreshed treasury snapshot. The running backend's capability flags determine which workflows are available in a new session.
+**Built on Solana devnet:** Mercurii combines a Next.js workspace, noncustodial API, Anchor program, MagicBlock Private Ephemeral Rollup (PER), and encrypted operational storage. The [signed transaction trail](#devnet-proof) shows a company funded with Circle devnet USDC, private request approval and execution, and a refreshed treasury snapshot. Mercurii is in active development.
 
 ## MagicBlock integration
 
@@ -43,7 +43,7 @@ MagicBlock is Mercurii's private payment and execution layer. The **Private Paym
 2. Mercurii delegates the account to the MagicBlock PER, initializes its permission account, and activates private readers **before** writing sensitive limits.
 3. A payer signs an unsigned Private Payments deposit. An authorized wallet then signs a treasury snapshot sync; the UI shows the confirmed private balance rather than assuming a submitted deposit has settled.
 4. A requester creates and delegates a payment-request shell. PER permission initialization and privacy activation precede writing the recipient and amount.
-5. The requester submits the private terms. Founder, or an authorized Finance or scoped Manager wallet, approves within its grant. Founder or authorized Finance signs execution; Manager cannot release treasury funds.
+5. The requester submits the private terms. Founder, or an authorized Finance or scoped Manager wallet, approves within its grant. Founder or authorized Finance signs the final treasury release.
 6. Mercury checks the request status, recipient, role, limits, budget, and token balance, then moves private USDC and marks the request executed in one PER transaction. The application reconciles the signed receipt and refreshes the treasury snapshot.
 
 ```mermaid
@@ -72,10 +72,10 @@ Mercurii gives that business a company account with private operating state and 
 | --- | --- |
 | **Founder** | Creates the company, sets limits, manages grants, sees the full private treasury, and can approve and execute payments. |
 | **Finance** | Prepares, approves, executes, and reconciles within a Founder-issued grant and its recipient and spending limits. |
-| **Manager** | Handles requests explicitly shared with their branch and approval scope; cannot execute a treasury payout. |
-| **Requester or employee** | Prepares their own requests and sees only records shared with them; receiving a salary does not grant treasury authority. |
+| **Manager** | Handles requests shared with their branch and approves within their assigned scope. |
+| **Requester or employee** | Prepares requests and views the payments and records shared with them. |
 | **Viewer or auditor** | Reads only assigned private records or a frozen, expiring audit bundle. |
-| **Agent** | Reads permitted records or spends from a separate capped float; cannot acquire unrestricted treasury authority. |
+| **Agent** | Reads permitted records or spends from a separate capped float under company policy. |
 
 ## Market opportunity
 
@@ -89,9 +89,9 @@ Stablecoins are already a business payment rail. [Allium's September 2026 resear
 | Payroll | **$43B** | Relevant to recurring team payouts. |
 | Supplier payments | **$28B** | Relevant to vendor and contractor workflows. |
 
-These are estimated market-wide payment flows, **not Mercurii's addressable revenue or transaction volume**. Allium also reports that businesses received 58%–64% of stablecoin payments during this period. The opportunity for Mercurii is the software layer companies need around those payments: confidentiality, permissions, approvals, and reconciliation.
+These market-wide payment estimates show the scale of stablecoin activity. Allium also reports that businesses received 58%–64% of stablecoin payments during this period. Mercurii focuses on the software layer around those payments: confidentiality, permissions, approvals, and reconciliation.
 
-Mercurii's initial target buyer is narrower: a **2–50 person crypto-native agency, product studio, or onchain startup** that already uses stablecoins and regularly pays remote contractors or vendors. Its founder or finance lead needs privacy and approval controls without first adopting a new fiat account or a full HR system. The devnet product starts with Circle USDC.
+Mercurii's initial target buyer is a **2–50 person crypto-native agency, product studio, or onchain startup** that already uses stablecoins and regularly pays remote contractors or vendors. Its founder or finance lead needs private, controlled payments in one business workspace.
 
 | Segment | Starting need | Product expansion |
 | --- | --- | --- |
@@ -99,11 +99,11 @@ Mercurii's initial target buyer is narrower: a **2–50 person crypto-native age
 | Onchain startups | Founder-controlled treasury with explicit approval and spending limits. | Branch/team scopes and accountant sharing. |
 | Distributed service networks | Repeated payouts across many recipients. | API workflows and bounded agent operations. |
 
-The revenue opportunity still needs a bottom-up measure: **qualified reachable teams × validated annual contract value**, plus any net revenue from private operations. We have not established that buyer count, willingness to pay, or a revenue TAM. The [market research](research/mercurii-market-research-2026-10-13.md) records the assumptions and interview plan.
+Mercurii starts with teams that already use stablecoins for real operating payments, then grows with their finance workflows. The [market research](research/mercurii-market-research-2026-10-13.md) covers the segments and commercial research in more detail.
 
 ## Competitive landscape
 
-The alternatives already solve meaningful parts of company finance. Mercurii's proposed difference is one private operating state spanning treasury, requests, approvals, role-scoped records, and bounded agents; that differentiation must be proven through repeat use and security work.
+Mercurii brings private treasury activity, payment requests, approvals, role-scoped records, and bounded agents into one company workflow. Other products focus on different parts of that operating stack.
 
 | Alternative | What it offers today | Where Mercurii aims to differ |
 | --- | --- | --- |
@@ -113,39 +113,39 @@ The alternatives already solve meaningful parts of company finance. Mercurii's p
 | [Ramp for Agents](https://agents.ramp.com/) | Agent identity, owner, budget, human approver, merchant restrictions, and audit trail. | Bounded agent activity linked to a private Solana company treasury workflow. |
 | Wallet or multisig plus spreadsheet | Familiar tools for signing and tracking payments. | One workflow for private balances, requests, approvals, recipients, and reconciliation. |
 
-Mercurii has a differentiated design, **not yet a proven moat**. Request Finance has a much wider finance suite; Umbra focuses sharply on payroll; Squads has mature treasury infrastructure. Mercurii must earn trust through a repeatable signed browser flow, independent security review, integrations, and design-partner retention. See the fuller [competitive research](research/mercurii-market-research-2026-10-13.md#6-competitive-landscape).
+The [competitive research](research/mercurii-market-research-2026-10-13.md#6-competitive-landscape) expands on these products and Mercurii's position.
 
 ## Go-to-market strategy
 
 | Stage | Action | What to learn |
 | --- | --- | --- |
 | **Find the first teams** | Recruit stablecoin-using agencies and studios with monthly contractor or vendor payouts. | Who owns finance, how often they pay, and where the current workflow breaks. |
-| **Demonstrate the problem** | Show what an observer can infer from a known public company wallet, with Mercurii's own metadata boundary stated plainly. | Whether privacy and delegated approval are urgent enough to change tools. |
-| **Run a repeated workflow** | Complete receive → request → approval → payout → reconciliation with real signatures over more than one payment cycle. | Completion, repeat usage, failures, and support cost. |
+| **Show the private workflow** | Demonstrate the Founder view, role-scoped team access, and signed payment receipts. | Which privacy and approval controls matter most to teams. |
+| **Run a repeated workflow** | Complete receive → request → approval → payout → reconciliation with real signatures over more than one payment cycle. | Completion, repeat usage, and support needs. |
 | **Expand the account** | Add payroll batches, accountant sharing, integrations, and agent controls for teams that return. | Which workflow earns a paid subscription and which needs usage pricing. |
 
-Potential distribution includes Solana and MagicBlock teams, crypto agencies, accelerator cohorts, and finance/accounting partners. Design partners, conversion, retention, and willingness to pay are **validation goals**, not claimed current traction. The local [pitch deck](docs/pitch/mercurii-devnet-deck-2026-10-13.html) shows the same product story and labels its technical proof separately from commercial evidence.
+Potential distribution includes Solana and MagicBlock teams, crypto agencies, accelerator cohorts, and finance/accounting partners. The local [pitch deck](docs/pitch/mercurii-devnet-deck-2026-10-13.html) presents the product story, market, architecture, and devnet proof.
 
 ## Business model
 
-The team's business-model pitch slide proposes a **subscription with a free starting period**. These are proposed packages for customer discovery; billing and plan entitlements are not active in the devnet app.
+The team's business-model pitch slide outlines subscriptions that scale with company operations. Mercurii is in development, and these plans describe its commercial direction.
 
 | Proposed plan | Price | Included in the pitch |
 | --- | --- | --- |
-| **3-month trial** | **Free** for the first three months | 1 treasury, 2 members, private activity view, and 10 private transfers per month; no API or automation. |
+| **3-month trial** | **Free** for the first three months | 1 treasury, 2 members, private activity view, and 10 private transfers per month. |
 | **Basic** | **$149–$199/month** | Up to 10 members, roles and approval flows, budget rules, private vendor payments, recurring payroll, and limited agents and automation. |
 | **Business** | **$499+/month** | Multiple departments and treasuries, agent wallets, advanced policies and audit logs, API and programmatic payment controls, and priority support. |
 
-The model scales with a team's operating needs: a founder starts with a private treasury, adds people and repeatable payments, then adopts deeper controls and automation. The proposed prices and allowances come from the existing Mercury business-model slide; they need customer validation before launch. Private-operation usage could be metered above a bundled allowance once MagicBlock/PER, RPC, storage, and support costs are measured. The current program and app implement specific devnet workflows, not all proposed Business-plan entitlements.
+The model scales with a team's operating needs: a founder starts with a private treasury, adds people and repeatable payments, then adopts deeper controls and automation. The plan names, prices, and allowances reflect the team's existing business-model pitch slide.
 
 ## Roadmap
 
 | Stage | Milestone |
 | --- | --- |
 | **Built on devnet** | Mercury program, PER account delegation and permissions, recorded private receive/approval/payment proofs, Next.js workspace, API, and encrypted records. |
-| **Next demo gate** | Replay one complete Founder-to-recipient flow in the current browser/backend environment; confirm every runtime capability and recovery step with real wallet signatures. |
-| **Design-partner gate** | Interview target teams, observe repeated payment runs, test subscription willingness to pay, and measure retained use. |
-| **Production gate** | Independent program/security review, operational recovery, durable multi-company services, compliance review, and a limited-funds pilot. |
+| **Live demo** | Show the complete Founder-to-recipient journey with wallet signatures and signed receipts. |
+| **Design partners** | Bring stablecoin teams into repeated payment runs and refine subscriptions around their workflows. |
+| **Production** | Complete independent security review, operational recovery, durable multi-company services, and a limited-funds pilot. |
 
 ## What the application covers
 
@@ -160,7 +160,7 @@ The model scales with a team's operating needs: a founder starts with a private 
 | **x402 API purchases** | With explicit Founder authorization, an agent can inspect and buy an approved paid API resource from a separately funded wallet, then return a verified settlement receipt. |
 | **Records and audit** | Compare private request state, signed receipts, treasury snapshots, and selected frozen audit disclosures. |
 
-The interface uses real backend and chain state. A disabled feature or denied private read is shown as unavailable; it is not replaced with a sample balance or payment.
+The interface reads backend and onchain state, with wallet-signed actions and verifiable receipts.
 
 ## How it works
 
@@ -178,11 +178,11 @@ Every company payment is completed by an authorized wallet signature. Mercurii's
 
 1. Open `/app` and connect the wallet that will be the Founder. **Create company** makes that wallet the initial administrator; a Finance wallet is not required first.
 2. Sign each **Company setup** step. Wait for its receipt and confirmed chain status before advancing through delegation, private permission, privacy activation, spending limits, and balance tracker.
-3. Open **Receive**, sign a devnet deposit when the receive route is enabled, and refresh the private treasury snapshot. The displayed balance is not a live read of a public wallet.
+3. Open **Receive**, sign a devnet deposit in a configured development environment, and refresh the private treasury snapshot.
 4. In **Payees** and **Team access**, add a recipient and grant only the access needed for the demo.
 5. In **Payments**, create a request, sign its private setup and submission, approve it with an authorized wallet, execute, and check its receipt in **Records**. **Payroll** groups the same kind of requests into a run.
 
-This is a wallet-signed devnet walkthrough. Actual prompts, enabled buttons, and balances depend on the current company, funding, permissions, and backend `/health` capabilities.
+This is a wallet-signed devnet walkthrough. The [full-stack functionality matrix](docs/FULL_STACK_FUNCTIONALITY_MATRIX.md) tracks detailed development status for each workflow.
 
 ## Architecture
 
@@ -304,9 +304,9 @@ Check the running API and its actual capabilities:
 curl http://127.0.0.1:8787/health
 ```
 
-The backend gates private receive, token transfer execution, Finance Agent, x402, and recipient withdrawal behind `MERCURY_ENABLE_EXPERIMENTAL_RECEIVE`, `MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS`, `MERCURY_ENABLE_FINANCE_ASSISTANT`, `MERCURY_ENABLE_X402_AGENT`, and `MERCURY_ENABLE_EXPERIMENTAL_WITHDRAW`. A value of `1` enables the corresponding devnet route; absent flags leave it unavailable. Check `/health` and configure the required dependencies before attempting a flow. The website can load while the independently hosted API is unavailable.
+Configure the development workflows you want to run using [`backend/.env.example`](backend/.env.example), then confirm the active capabilities in `/health`. The [implementation log](docs/DEVNET_IMPLEMENTATION_LOG.md) has the endpoint and environment details.
 
-The workspace does not generate a funded demo company or fallback financial records. Use an actual devnet company and wallet signatures. The [Founder demo walkthrough](#founder-demo-walkthrough) gives the click order.
+Use a devnet company and wallet signatures for the [Founder demo walkthrough](#founder-demo-walkthrough).
 
 ## Build and test
 
@@ -317,7 +317,7 @@ npm --prefix frontend test
 cargo test -p mercury
 ```
 
-`npm run check` typechecks the backend and builds the Next.js app. Live PER transaction tests require a configured devnet environment and wallet funding; passing local tests does not establish that a new company can complete every browser flow.
+`npm run check` typechecks the backend and builds the Next.js app. Live PER transaction tests use a configured devnet environment and funded test wallets.
 
 ## Repository structure
 
@@ -330,8 +330,8 @@ cargo test -p mercury
 | [`supabase/migrations/`](supabase/migrations/) | Encrypted operations schema, record versions, and app indexes. |
 | [`docs/`](docs/) | Architecture, functionality audit, devnet proof catalog, and implementation history. |
 
-## Devnet scope and next steps
+## Development
 
-Mercurii's devnet implementation is available for wallet-signed testing with test USDC. The next milestone is to replay the complete browser journey for each role and a newly registered company, with the correct capability flags, funded wallets, TEE access, and recipient setup. Snapshot refresh and payroll payouts use authorized signatures, keeping control with the company. Solana provides verifiable funding and withdrawal receipts while PER keeps the operating records permissioned. Mainnet deployment follows operational recovery work, broader failure testing, and an independent security review.
+Mercurii is in active development on Solana devnet. Its wallet-signed test flows use Circle devnet USDC, MagicBlock private execution, and verifiable settlement receipts. The next phase brings the complete browser journey to more company roles and prepares the infrastructure for production.
 
 For a feature-by-feature code and runtime assessment, see the [full-stack functionality matrix](docs/FULL_STACK_FUNCTIONALITY_MATRIX.md). For the program's privacy and custody design, see [architecture](docs/ARCHITECTURE.md).
