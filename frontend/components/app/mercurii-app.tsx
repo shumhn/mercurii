@@ -99,18 +99,23 @@ export function MercuriiApp() {
   const [walletOptions, setWalletOptions] = useState<WalletOption[]>([]);
   const [walletChoice, setWalletChoice] = useState<WalletOption | null>(null);
   const [walletIntent, setWalletIntent] = useState<"connect" | "register" | "prepare" | null>(null);
-  const [companyEntryMode, setCompanyEntryMode] = useState<"new" | "existing">(app.company ? "existing" : "new");
+  // A remembered company address is only a convenience. Never use it to decide
+  // a new visitor's intent: they may be creating another company or joining one.
+  const [companyEntryMode, setCompanyEntryMode] = useState<"choose" | "new" | "existing">("choose");
   const activeRole = app.session?.role;
+  const isEntryChoice = !app.session && companyEntryMode === "choose";
   const isNewCompany = !app.session && companyEntryMode === "new";
   const founderSetupRequired = activeRole === "founder" && (
     app.policy.state === "error" ||
     (app.policy.state === "ready" && app.snapshot.state === "error")
   );
-  const page = isNewCompany
+  const page = isEntryChoice
+    ? { eyebrow: "Welcome to Mercurii", title: "Choose how to start", description: "Create a private company account or open the company that invited you." }
+    : isNewCompany
     ? { eyebrow: "Founder onboarding", title: "Create your company", description: "Set up the company shell first, then activate private operations and fund your treasury." }
     : titles[view];
   const visibleNavigation = navigation.filter((item) => {
-    if (isNewCompany) return item.id === "overview";
+    if (isEntryChoice || isNewCompany) return item.id === "overview";
     if (founderSetupRequired) return item.id === "overview" || item.id === "setup";
     return !activeRole || !item.roles || item.roles.includes(activeRole);
   });
@@ -281,12 +286,12 @@ export function MercuriiApp() {
           <div className="rounded-xl border border-app-line bg-app-canvas p-3">
             <span className="text-[11px] font-semibold uppercase tracking-wider text-app-muted">Company</span>
             <div className="mt-2 flex items-center gap-2"><span className="grid size-8 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand"><Landmark className="size-4" aria-hidden /></span>
-              <span className="min-w-0 truncate text-sm font-semibold">{app.session ? shortAddress(app.session.company) : isNewCompany ? "New company" : app.company ? shortAddress(app.company) : "Select company"}</span></div>
-            <span className="mt-2 block text-xs text-app-muted">{app.session ? `${app.session.role} access · devnet` : isNewCompany ? "Founder setup · devnet" : "Connect to unlock private data"}</span>
+              <span className="min-w-0 truncate text-sm font-semibold">{app.session ? shortAddress(app.session.company) : isNewCompany ? "New company" : isEntryChoice ? "Get started" : app.company ? shortAddress(app.company) : "Select company"}</span></div>
+            <span className="mt-2 block text-xs text-app-muted">{app.session ? `${app.session.role} access · devnet` : isNewCompany ? "Founder setup · devnet" : isEntryChoice ? "Choose your path · devnet" : "Connect to unlock private data"}</span>
           </div>
         </div>
         <nav className="mt-5 flex-1 overflow-y-auto px-3 pb-5" aria-label="Workspace navigation">
-          {!app.session && <p className="mb-5 px-3 text-xs leading-5 text-app-muted">{isNewCompany ? "Create your company before private workspaces and payment tools appear." : "Your role and private records unlock after wallet sign-in."}</p>}
+          {!app.session && <p className="mb-5 px-3 text-xs leading-5 text-app-muted">{isEntryChoice ? "Start a company or use an address shared by your Founder." : isNewCompany ? "Create your company before private workspaces and payment tools appear." : "Your role and private records unlock after wallet sign-in."}</p>}
           {(["Workspace", "Money", "Company"] as const).map((group) => {
             const items = visibleNavigation.filter((item) => item.group === group);
             return items.length ? <div key={group} className="mt-4 first:mt-0">
@@ -307,7 +312,8 @@ export function MercuriiApp() {
           <div className="flex items-center gap-3">{app.session ? <><span className="hidden rounded-full bg-brand/10 px-3 py-1.5 text-xs font-semibold capitalize text-brand sm:inline">{app.session.role}</span>
             <CopyableAddress address={app.session.address} />
             <button className={secondaryButtonClass} onClick={disconnect} aria-label="Disconnect wallet"><LogOut className="size-4" aria-hidden /><span className="hidden sm:inline">Disconnect</span></button></> :
-            isNewCompany ? <button className={buttonClass} onClick={() => document.getElementById("finance-wallet")?.focus()}><Landmark className="size-4" aria-hidden />Start setup</button> :
+            isEntryChoice ? <button className={buttonClass} onClick={() => setCompanyEntryMode("new")}><Landmark className="size-4" aria-hidden />Start a company</button> :
+            isNewCompany ? <button className={secondaryButtonClass} onClick={() => setCompanyEntryMode("choose")}>Back</button> :
               <button className={buttonClass} onClick={() => setWalletIntent("connect")} disabled={app.connecting || !app.company.trim()} aria-busy={app.connecting} title={app.company.trim() ? undefined : "Enter a company policy address first"}>
                 {app.connecting ? <LoaderCircle className="size-4 animate-spin" aria-hidden /> : <WalletCards className="size-4" aria-hidden />}
                 {app.connecting ? "Connecting" : app.company.trim() ? "Connect wallet" : "Select company"}</button>}</div>
@@ -321,7 +327,11 @@ export function MercuriiApp() {
           </div>
 
           {app.connectionError && <div role="alert" className="mt-5 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">{app.connectionError}</div>}
-          {!app.session ? isNewCompany ? <NewCompanyStart
+          {!app.session ? isEntryChoice ? <WelcomeStart
+            rememberedCompany={app.company}
+            onStartCompany={() => setCompanyEntryMode("new")}
+            onJoinCompany={() => setCompanyEntryMode("existing")}
+          /> : isNewCompany ? <NewCompanyStart
             backendOnline={app.backendStatus === "online"}
             busy={registerBusy}
             finance={bootstrapFinance}
@@ -371,6 +381,47 @@ function CopyableAddress({ address }: { address: string }) {
 
 const explorerLinkClass = "break-all font-mono text-xs text-brand underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-brand";
 
+function WelcomeStart({ rememberedCompany, onStartCompany, onJoinCompany }: {
+  rememberedCompany: string; onStartCompany: () => void; onJoinCompany: () => void;
+}) {
+  return <div className="mt-7 grid gap-5 lg:grid-cols-[minmax(0,1.12fr)_minmax(320px,.88fr)]">
+    <section className={`${cardClass} p-6 sm:p-9`}>
+      <span className="inline-flex size-11 items-center justify-center rounded-xl bg-brand/10 text-brand"><Landmark className="size-5" aria-hidden /></span>
+      <h2 className="mt-5 text-2xl font-semibold tracking-tight">What would you like to do?</h2>
+      <p className="mt-2 max-w-2xl text-sm leading-6 text-app-muted">Start a private company account as its Founder, or open the company that gave you an address. You can change company later in Workspace settings.</p>
+
+      <div className="mt-7 grid gap-3 sm:grid-cols-2">
+        <button type="button" onClick={onStartCompany} className="group min-h-48 rounded-2xl border-2 border-brand bg-brand/[.035] p-5 text-left transition-colors hover:bg-brand/[.07] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+          <span className="grid size-10 place-items-center rounded-xl bg-brand text-white"><Landmark className="size-5" aria-hidden /></span>
+          <span className="mt-5 block text-base font-semibold">Start a company</span>
+          <span className="mt-1 block text-sm leading-6 text-app-muted">I&apos;m the Founder. Create the account, turn on privacy, then fund it.</span>
+          <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-brand">Create my company <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" aria-hidden /></span>
+        </button>
+        <button type="button" onClick={onJoinCompany} className="group min-h-48 rounded-2xl border border-app-line bg-white p-5 text-left transition-colors hover:border-brand/40 hover:bg-app-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+          <span className="grid size-10 place-items-center rounded-xl bg-app-canvas text-brand"><LockKeyhole className="size-5" aria-hidden /></span>
+          <span className="mt-5 block text-base font-semibold">Join a company</span>
+          <span className="mt-1 block text-sm leading-6 text-app-muted">I have a company policy address or an invitation from my team.</span>
+          <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-brand">Open company <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" aria-hidden /></span>
+        </button>
+      </div>
+
+      {rememberedCompany && <button type="button" onClick={onJoinCompany} className="mt-5 inline-flex min-h-10 items-center gap-2 text-left text-sm font-semibold text-brand underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
+        Continue with a recently used company <span className="font-mono text-xs">{shortAddress(rememberedCompany)}</span><ChevronRight className="size-4" aria-hidden />
+      </button>}
+    </section>
+    <section className={`${cardClass} p-6 sm:p-8`}>
+      <p className="text-xs font-bold uppercase tracking-wider text-app-muted">Before you start</p>
+      <h3 className="mt-4 text-lg font-semibold">You stay in control of your company wallet.</h3>
+      <ul className="mt-5 space-y-4 text-sm leading-6 text-app-muted">
+        <li className="flex gap-3"><span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700"><Check className="size-3" aria-hidden /></span><span>Use a Solana wallet connected to <strong className="font-semibold text-foreground">devnet</strong>.</span></li>
+        <li className="flex gap-3"><span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700"><Check className="size-3" aria-hidden /></span><span>You review and approve every wallet signature. Mercurii never holds your private keys.</span></li>
+        <li className="flex gap-3"><span className="mt-0.5 grid size-5 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700"><Check className="size-3" aria-hidden /></span><span>After setup, the app takes you straight to funding your private treasury.</span></li>
+      </ul>
+      <div className="mt-7 rounded-xl border border-app-line bg-app-canvas p-4"><p className="text-sm font-semibold">New here?</p><p className="mt-1 text-xs leading-5 text-app-muted">Choose <strong className="font-semibold text-foreground">Start a company</strong>. The first action is to connect your Founder wallet.</p></div>
+    </section>
+  </div>;
+}
+
 function NewCompanyStart({ backendOnline, busy, finance, setFinance, bootstrapStep, message, error,
   onPrepare, onSign, onInspect, onRetry, onStartOver, onRegister, onConnect, onUseExisting }: {
   backendOnline: boolean; busy: boolean; finance: string; setFinance: (value: string) => void;
@@ -385,23 +436,24 @@ function NewCompanyStart({ backendOnline, busy, finance, setFinance, bootstrapSt
   return <div className="mt-7 grid gap-5 xl:grid-cols-[minmax(0,1.18fr)_minmax(320px,.82fr)]">
     <section className={`${cardClass} p-6 sm:p-8`}>
       <span className="inline-flex size-11 items-center justify-center rounded-xl bg-brand/10 text-brand"><Landmark className="size-5" aria-hidden /></span>
-      <h2 className="mt-5 text-2xl font-semibold tracking-tight">Start with your company account.</h2>
-      <p className="mt-2 max-w-2xl text-sm leading-6 text-app-muted">Create your company account with your Founder wallet — one signature. Mercurii then turns on private operations through MagicBlock, so you can fund, pay, and manage the team from one workspace.</p>
+      <h2 className="mt-5 text-2xl font-semibold tracking-tight">Create your company account.</h2>
+      <p className="mt-2 max-w-2xl text-sm leading-6 text-app-muted">First, connect the wallet that will be the Founder. You&apos;ll review one company-account transaction, then Mercurii will guide you through private operations.</p>
 
-      <div className="mt-7 max-w-2xl">
-        <label htmlFor="finance-wallet" className="mb-2 block text-sm font-semibold">Finance wallet <span className="font-normal text-app-muted">(optional)</span></label>
-        <input id="finance-wallet" className={`${inputClass} font-mono`} value={finance} disabled={signed}
-          onChange={(event) => setFinance(event.target.value)} placeholder="Leave blank to use your Founder wallet"
-          autoComplete="off" spellCheck={false} />
-        <p className="mt-2 text-xs leading-5 text-app-muted">Finance can be your Founder wallet now. Use a separate Solana address only when another teammate will manage payments.</p>
-      </div>
+      <details className="mt-7 max-w-2xl rounded-xl border border-app-line bg-app-canvas p-4" open={Boolean(finance)}>
+        <summary className="cursor-pointer text-sm font-semibold text-foreground">Add a Finance wallet now <span className="font-normal text-app-muted">(optional)</span></summary>
+        <div className="mt-4"><label htmlFor="finance-wallet" className="mb-2 block text-sm font-semibold">Finance wallet address</label>
+          <input id="finance-wallet" className={`${inputClass} font-mono`} value={finance} disabled={signed}
+            onChange={(event) => setFinance(event.target.value)} placeholder="Example: a teammate's Solana address"
+            autoComplete="off" spellCheck={false} />
+          <p className="mt-2 text-xs leading-5 text-app-muted">Leave this blank to use the Founder wallet. You can invite Finance after setup.</p></div>
+      </details>
 
       {!bootstrapStep ? registered ? <div className="mt-6 flex flex-wrap items-center gap-3">
         <button className={buttonClass} disabled={busy || !backendOnline} onClick={onConnect}>
           Continue to private setup<ArrowRight className="size-4" aria-hidden /></button>
         <button className={secondaryButtonClass} disabled={busy || !backendOnline} onClick={onPrepare}>Start over</button>
-      </div> : <button className={`${buttonClass} mt-6`} disabled={busy || !backendOnline} onClick={onPrepare}>
-        {busy ? "Preparing company…" : "Create company account"}<ArrowRight className="size-4" aria-hidden />
+      </div> : <button className={`${buttonClass} mt-6`} disabled={busy || !backendOnline} onClick={onPrepare} aria-busy={busy}>
+        {busy ? "Connecting wallet…" : "Connect Founder wallet"}<ArrowRight className="size-4" aria-hidden />
       </button> : <div className="mt-7 rounded-2xl border border-app-line bg-app-canvas p-5 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold">Company account prepared</p>
           <p className="mt-1 text-xs leading-5 text-app-muted">Founder {shortAddress(bootstrapStep.founder)} · Finance {shortAddress(bootstrapStep.finance)}</p></div>

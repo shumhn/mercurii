@@ -18,13 +18,10 @@ const unavailableCapabilities: Capabilities = { privateReceive: false, paymentEx
 
 const COMPANY_STORAGE_KEY = "mercurii.company";
 
-function readStoredCompany(): string {
-  if (typeof window === "undefined") return "";
-  try { return window.localStorage.getItem(COMPANY_STORAGE_KEY) ?? ""; } catch { return ""; }
-}
-
 export function useMercurii(onClearPrivateDraft?: () => void) {
-  const [company, setCompanyState] = useState(readStoredCompany);
+  // Keep the initial server and browser render identical. The remembered address
+  // is restored after hydration, otherwise Next's instant navigation can fail.
+  const [company, setCompanyState] = useState("");
   const setCompany = useCallback((value: string) => {
     setCompanyState(value);
     try {
@@ -51,6 +48,10 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
   const walletRef = useRef<BrowserWallet | null>(null);
   const generationRef = useRef(0);
   const intentionalDisconnectRef = useRef(false);
+
+  useEffect(() => {
+    try { setCompanyState(window.localStorage.getItem(COMPANY_STORAGE_KEY) ?? ""); } catch { /* Storage unavailable. */ }
+  }, []);
 
   const clearPrivateData = useCallback(() => {
     setPolicy(idle()); setSnapshot(idle()); setMembers(idle());
