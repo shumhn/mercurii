@@ -171,7 +171,7 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
     setConnectionError(null);
     const companyAddress = (companyOverride ?? company).trim();
     if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(companyAddress)) {
-      setConnectionError("Enter the company policy address before connecting"); return;
+      setConnectionError("Enter the company account address before connecting"); return;
     }
     const generation = ++generationRef.current;
     clearPrivateData();

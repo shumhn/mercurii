@@ -78,7 +78,7 @@ export function ReceivePanel({ app }: { app: MercuriiController }) {
   }
   return <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
     <section className={`${cardClass} p-5 sm:p-7`}><div className="flex items-center gap-3"><span className="grid size-10 place-items-center rounded-xl bg-brand/10 text-brand"><ArrowDownLeft className="size-5" /></span><div><h2 className="text-xl font-semibold">Fund the private treasury</h2><p className="text-sm text-app-muted">MagicBlock Private Payments · Circle devnet USDC</p></div></div>
-      {!founder ? <div className="mt-6"><Notice title="Founder action" detail="Only the Founder can advance company treasury funding. Share the company policy address with an authorized payer." /></div> :
+      {!founder ? <div className="mt-6"><Notice title="Founder action" detail="Only the Founder can advance company treasury funding. Share the company account address with an authorized payer." /></div> :
         !app.capabilities.privateReceive ? <div className="mt-6"><Notice title="Private receive is not enabled" detail="This backend has not enabled its experimental Circle devnet USDC receive flow. The company address and treasury snapshot remain visible for review." /></div> : <>
         <p className="mt-6 max-w-2xl text-sm leading-6 text-app-muted">A payer signs a private deposit, then the Founder signs a treasury snapshot sync. The displayed balance changes only after private state confirms. This flow requires the backend&apos;s experimental receive gate.</p>
         <div className="mt-6 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium">Payer wallet<input className={`${inputClass} mt-2 font-mono`} value={app.session!.address} readOnly /></label>
@@ -92,7 +92,7 @@ export function ReceivePanel({ app }: { app: MercuriiController }) {
       </>}
       {(error || notice) && <p role={error ? "alert" : "status"} className={`mt-5 rounded-xl p-4 text-sm ${error ? "bg-red-50 text-red-800" : "bg-brand/5 text-brand"}`}>{error ?? notice}</p>}
     </section>
-    <section className={`${cardClass} h-fit p-5 sm:p-7`}><h2 className="text-base font-semibold">Receive details</h2><dl className="mt-5 space-y-4 text-sm"><div><dt className="text-xs text-app-muted">Company policy</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.company}</dd></div><div><dt className="text-xs text-app-muted">Private snapshot</dt><dd className="mt-1 font-semibold">{formatUsdc(app.snapshot.value?.balanceMicro)}</dd></div><div><dt className="text-xs text-app-muted">Mint</dt><dd className="mt-1 break-all font-mono text-xs">{app.policy.value?.mint ?? "Permissioned"}</dd></div></dl>
+    <section className={`${cardClass} h-fit p-5 sm:p-7`}><h2 className="text-base font-semibold">Receive details</h2><dl className="mt-5 space-y-4 text-sm"><div><dt className="text-xs text-app-muted">Company account</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.company}</dd></div><div><dt className="text-xs text-app-muted">Private snapshot</dt><dd className="mt-1 font-semibold">{formatUsdc(app.snapshot.value?.balanceMicro)}</dd></div><div><dt className="text-xs text-app-muted">Mint</dt><dd className="mt-1 break-all font-mono text-xs">{app.policy.value?.mint ?? "Permissioned"}</dd></div></dl>
       <p className="mt-5 border-t border-app-line pt-4 text-xs leading-5 text-app-muted">Use the guided flow to preserve the original signed deposit and prevent duplicate funding after an uncertain network response.</p></section>
   </div>;
 }

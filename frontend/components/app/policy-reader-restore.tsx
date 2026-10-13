@@ -64,7 +64,7 @@ export function PolicyReaderRestore({ app }: { app: MercuriiController }) {
     setNotice(`Same reader signature: ${result.receipt.status} · ${result.broadcast}.`);
   }
   return <section className={`${cardClass} p-5 sm:p-7`}><h2 className="text-lg font-semibold">Finance reader recovery</h2>
-    <p className="mt-2 text-sm leading-6 text-app-muted">After issuing a new active Finance grant, the Founder can restore that wallet&apos;s private company policy access. This does not grant spending authority by itself.</p>
+    <p className="mt-2 text-sm leading-6 text-app-muted">After issuing a new active Finance grant, the Founder can restore that wallet&apos;s private company account access. This does not grant spending authority by itself.</p>
     <div className="mt-4 flex flex-wrap gap-2"><label className="min-w-48 flex-1 text-xs font-semibold">Finance grant<select className="mt-2 min-h-11 w-full rounded-xl border border-app-line bg-white px-3 text-sm" value={grant} onChange={(e) => { setGrant(e.target.value); setStep(null); setSigned(null); }}><option value="">Select grant</option>
       {grants.map((item) => <option key={item.address} value={item.address}>{shortAddress(item.member)} · {shortAddress(item.address)}</option>)}</select></label></div>
     <div className="mt-4 flex flex-wrap gap-2"><button className={buttonClass} disabled={busy || !grant || Boolean(step && !signed)} onClick={() => void action(prepare)}>Prepare reader restoration</button>

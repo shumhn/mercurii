@@ -315,7 +315,7 @@ export function MercuriiApp() {
             <button className={secondaryButtonClass} onClick={disconnect} aria-label="Disconnect wallet"><LogOut className="size-4" aria-hidden /><span className="hidden sm:inline">Disconnect</span></button></> :
             isEntryChoice ? <button className={buttonClass} onClick={() => setCompanyEntryMode("new")}><Landmark className="size-4" aria-hidden />Start a company</button> :
             isNewCompany ? <button className={secondaryButtonClass} onClick={() => setCompanyEntryMode("choose")}>Back</button> :
-              <button className={buttonClass} onClick={() => setWalletIntent("connect")} disabled={app.connecting || !app.company.trim()} aria-busy={app.connecting} title={app.company.trim() ? undefined : "Enter a company policy address first"}>
+              <button className={buttonClass} onClick={() => setWalletIntent("connect")} disabled={app.connecting || !app.company.trim()} aria-busy={app.connecting} title={app.company.trim() ? undefined : "Enter a company account address first"}>
                 {app.connecting ? <LoaderCircle className="size-4 animate-spin" aria-hidden /> : <WalletCards className="size-4" aria-hidden />}
                 {app.connecting ? "Connecting" : app.company.trim() ? "Connect wallet" : "Select company"}</button>}</div>
         </header>
@@ -399,7 +399,7 @@ function WelcomeStart({ rememberedCompany, onStartCompany, onJoinCompany }: {
         <button type="button" onClick={onJoinCompany} className="group min-h-48 rounded-2xl border border-app-line bg-white p-5 text-left transition-colors hover:border-brand/40 hover:bg-app-canvas focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand">
           <span className="grid size-10 place-items-center rounded-xl bg-app-canvas text-brand"><LockKeyhole className="size-5" aria-hidden /></span>
           <span className="mt-5 block text-base font-semibold">Join a company</span>
-          <span className="mt-1 block text-sm leading-6 text-app-muted">I have a company policy address or an invitation from my team.</span>
+          <span className="mt-1 block text-sm leading-6 text-app-muted">I have a company account address or an invitation from my team.</span>
           <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold text-brand">Open company <ArrowRight className="size-4 transition-transform group-hover:translate-x-0.5" aria-hidden /></span>
         </button>
       </div>
@@ -454,9 +454,13 @@ function NewCompanyStart({ backendOnline, busy, bootstrapStep, message, error,
         <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold">Company account prepared</p>
           <p className="mt-1 text-xs leading-5 text-app-muted">Founder {shortAddress(bootstrapStep.founder)} · initial administrator</p></div>
           <span className="rounded-full bg-brand/10 px-3 py-1 text-xs font-semibold text-brand">Solana devnet</span></div>
-        <p className="mt-4 rounded-xl border border-app-line bg-white p-3 text-xs text-app-muted">Policy address:{" "}
+        <div className="mt-4 rounded-xl border border-app-line bg-white p-3">
+          <p className="text-xs font-semibold text-foreground">Company account address</p>
+          <p className="mt-1 break-all text-xs text-app-muted">
           <a className={explorerLinkClass} href={devnetExplorer("address", bootstrapStep.company)} target="_blank" rel="noreferrer">
             {bootstrapStep.company}<ExternalLink className="ml-1 inline size-3 align-[-1px]" aria-hidden /></a></p>
+          <p className="mt-2 text-xs leading-5 text-app-muted">This identifies your Mercurii company onchain. It is not a wallet that holds company funds.</p>
+        </div>
         {!shellReady && <p className="mt-3 text-xs leading-5 text-app-muted">Your wallet will review the public company initialization and network fee before anything is signed.</p>}
         <div className="mt-4 flex flex-wrap gap-2">
           {!signed && bootstrapStep.transaction && <button className={buttonClass} disabled={busy} onClick={onSign}>{busy ? "Waiting for wallet…" : "Review & sign company"}</button>}
@@ -507,15 +511,15 @@ function ExistingCompanyStart({ app, view, busy, message, error, onConnect, onRe
   return <div className="mt-7 grid gap-5 lg:grid-cols-[1.2fr_.8fr]">
     <section className={`${cardClass} p-6 sm:p-9`}><span className="inline-flex size-11 items-center justify-center rounded-xl bg-brand/10 text-brand"><LockKeyhole className="size-5" aria-hidden /></span>
       <h2 className="mt-5 text-2xl font-semibold tracking-tight">Open an existing company.</h2>
-      <p className="mt-2 max-w-xl text-sm leading-6 text-app-muted">Enter a Mercurii company policy address, then connect the wallet that has access. Your role determines the private records and actions that become available.</p>
-      <div className="mt-7 max-w-xl"><label htmlFor="company-address" className="mb-2 block text-sm font-semibold">Company policy address</label>
-        <input id="company-address" className={`${inputClass} font-mono`} value={app.company} onChange={(event) => app.setCompany(event.target.value)} placeholder="Solana company policy address" autoComplete="off" spellCheck={false} />
+      <p className="mt-2 max-w-xl text-sm leading-6 text-app-muted">Enter the Mercurii company account address shared by your Founder, then connect the wallet that has access. Your role determines the private records and actions that become available.</p>
+      <div className="mt-7 max-w-xl"><label htmlFor="company-address" className="mb-2 block text-sm font-semibold">Company account address</label>
+        <input id="company-address" className={`${inputClass} font-mono`} value={app.company} onChange={(event) => app.setCompany(event.target.value)} placeholder="Solana company account address" autoComplete="off" spellCheck={false} />
       </div>
       <button className={`${buttonClass} mt-6`} onClick={onConnect} disabled={app.connecting || !app.company.trim()}>
         {app.connecting ? "Waiting for wallet…" : "Connect company wallet"}<ArrowRight className="size-4" aria-hidden />
       </button>
       <details className="mt-7 border-t border-app-line pt-5 text-sm"><summary className="cursor-pointer font-semibold text-brand">My shell exists on Solana but is not registered here</summary>
-        <p className="mt-2 max-w-xl leading-6 text-app-muted">Use the Founder wallet to verify the existing Mercurii policy account. This does not create a new company shell.</p>
+        <p className="mt-2 max-w-xl leading-6 text-app-muted">Use the Founder wallet to verify the existing Mercurii company account. This does not create a new company shell.</p>
         <button className={`${secondaryButtonClass} mt-3`} disabled={busy || app.backendStatus !== "online"} onClick={onRegister}>{busy ? "Verifying shell…" : "Register Founder company"}</button>
       </details>
       {message && <p role="status" className="mt-4 text-sm font-medium text-emerald-700">{message}</p>}
@@ -564,7 +568,7 @@ function Overview({ app, navigate }: { app: MercuriiController; navigate: (view:
       <button className={secondaryButtonClass} onClick={app.refresh}>Check again</button></div>} />;
   if (role === "founder" && app.policy.state === "ready" && app.snapshot.state === "error") return <Notice
     title="One setup phase left"
-    detail="Your company policy is private and active, but the treasury balance tracker is not set up yet. Finish the last setup phase to see the treasury balance here."
+    detail="Your private company account is active, but the treasury balance tracker is not set up yet. Finish the last setup phase to see the treasury balance here."
     action={<button className={buttonClass} onClick={() => navigate("setup")}>Finish setup</button>} />;
   const snapshot = app.snapshot.value;
   const remaining = policy ? BigInt(policy.monthlyLimitMicro) - BigInt(policy.spentMicro) - BigInt(policy.reservedMicro) : null;
@@ -588,9 +592,9 @@ function Overview({ app, navigate }: { app: MercuriiController; navigate: (view:
   return <div className="space-y-5">
     <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <Metric icon={LockKeyhole} label="Private treasury" value={snapshot ? formatUsdc(snapshot.balanceMicro) : "—"} note={app.snapshot.state === "error" ? "Balance unavailable — try refreshing" : snapshot ? "Verified on the MagicBlock private network" : "Loading private balance"} emphasis />
-      <Metric icon={Activity} label="Available policy budget" value={remaining == null ? "—" : formatUsdc(remaining.toString())} note="Period cap less spent and reserved" />
+      <Metric icon={Activity} label="Available monthly budget" value={remaining == null ? "—" : formatUsdc(remaining.toString())} note="Period cap less spent and reserved" />
       <Metric icon={ClipboardCheck} label="Awaiting approval" value={app.payments.state === "ready" ? String(pending.length) : "—"} note="Submitted private requests" />
-      <Metric icon={Bot} label="Agent policy ceiling" value={policy ? formatUsdc(policy.agentCapMicro) : "—"} note="Separate agent spending limit" />
+      <Metric icon={Bot} label="AI-agent spending limit" value={policy ? formatUsdc(policy.agentCapMicro) : "—"} note="Separate agent spending limit" />
     </div>
     <div className="grid gap-5 xl:grid-cols-[1.35fr_.65fr]">
       <section className={`${cardClass} overflow-hidden`}><div className="flex items-center justify-between border-b border-app-line px-5 py-4 sm:px-6"><div><h2 className="text-base font-semibold">Recent payment activity</h2><p className="mt-1 text-xs text-app-muted">Latest private requests and their settlement</p></div><button className="text-sm font-semibold text-brand focus-visible:outline-2 focus-visible:outline-brand" onClick={() => navigate("payments")}>View all</button></div>
@@ -637,7 +641,7 @@ function SettingsPanel({ app }: { app: MercuriiController }) {
   const session = app.session!;
   return <div className="grid gap-5 lg:grid-cols-2">
     <section className={`${cardClass} p-6`}><h2 className="text-base font-semibold">Company connection</h2><dl className="mt-5 space-y-4 text-sm">
-      {[["Company policy", session.company], ["Wallet", session.address], ["Role", session.role], ["Network", "Solana devnet"], ["Private login", session.expiresAt ? new Date(session.expiresAt).toLocaleString() : "Active"]].map(([label, value]) => <div key={label} className="border-b border-app-line pb-3"><dt className="text-xs text-app-muted">{label}</dt><dd className="mt-1 break-all font-medium">{value}</dd></div>)}</dl></section>
+      {[["Company account", session.company], ["Wallet", session.address], ["Role", session.role], ["Network", "Solana devnet"], ["Private login", session.expiresAt ? new Date(session.expiresAt).toLocaleString() : "Active"]].map(([label, value]) => <div key={label} className="border-b border-app-line pb-3"><dt className="text-xs text-app-muted">{label}</dt><dd className="mt-1 break-all font-medium">{value}</dd></div>)}</dl></section>
     <section className={`${cardClass} p-6`}><h2 className="text-base font-semibold">Security boundary</h2><div className="mt-5 space-y-4 text-sm leading-6 text-app-muted"><p>Your private session key lives only in this tab&apos;s memory. Closing or disconnecting clears it.</p><p>Private records appear only when the MagicBlock permission layer allows this wallet to read them.</p><p>The app prepares unsigned transactions. Your wallet signs every company payment step before anything is submitted.</p><p>Payment terms and payroll rosters are not saved in browser storage.</p></div></section>
   </div>;
 }
