@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mercurii Competitive Landscape — October 2026</title>
+  <style>
+    :root {
+      --paper: #f2f2f1;
+      --ink: #141a24;
+      --muted: #5f6672;
+      --blue: #0038ff;
+      --green: #00a96e;
+      --line: rgba(20, 26, 36, 0.15);
+      --card: rgba(255,255,255,0.78);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(1440px, calc(100% - 48px)); margin: 0 auto; padding: 52px 0 80px; }
+    .eyebrow { color: var(--blue); font-weight: 750; letter-spacing: .11em; text-transform: uppercase; font-size: 12px; }
+    h1 { font-size: clamp(42px, 6vw, 86px); line-height: .96; letter-spacing: -.055em; max-width: 1100px; margin: 18px 0 22px; }
+    .lede { max-width: 940px; color: var(--muted); font-size: 21px; line-height: 1.45; margin-bottom: 46px; }
+    .thesis { background: var(--blue); color: white; border-radius: 26px; padding: 32px; display: grid; grid-template-columns: .75fr 1.25fr; gap: 30px; align-items: end; }
+    .thesis strong { font-size: 20px; }
+    .thesis p { font-size: clamp(26px, 3vw, 46px); line-height: 1.08; letter-spacing: -.035em; margin: 0; }
+    h2 { font-size: 34px; letter-spacing: -.03em; margin: 56px 0 20px; }
+    .grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 14px; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 22px; min-height: 230px; }
+    .card h3 { font-size: 22px; letter-spacing: -.02em; margin: 0 0 8px; }
+    .card .kind { font-size: 11px; text-transform: uppercase; letter-spacing: .09em; color: var(--blue); font-weight: 750; }
+    .card p { color: var(--muted); line-height: 1.5; }
+    .card b { color: var(--ink); }
+    .matrix { margin-top: 18px; background: #fff; border: 1px solid var(--line); border-radius: 24px; overflow: hidden; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; vertical-align: top; padding: 17px 18px; border-bottom: 1px solid var(--line); }
+    th { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; background: rgba(0,56,255,.05); }
+    td { font-size: 14px; line-height: 1.45; }
+    tr:last-child td { border-bottom: 0; }
+    .yes { color: var(--green); font-weight: 750; }
+    .partial { color: #9a6b00; font-weight: 750; }
+    .no { color: #8a3443; font-weight: 750; }
+    .warning { display: grid; grid-template-columns: 220px 1fr; gap: 24px; border-top: 2px solid var(--ink); margin-top: 52px; padding-top: 24px; }
+    .warning h2 { margin: 0; font-size: 26px; }
+    .warning p { margin: 0; color: var(--muted); font-size: 18px; line-height: 1.55; }
+    .foot { margin-top: 60px; font-size: 12px; color: var(--muted); display: flex; justify-content: space-between; gap: 20px; }
+    a { color: inherit; }
+    @media (max-width: 1000px) { .grid { grid-template-columns: 1fr 1fr; } .thesis { grid-template-columns: 1fr; } }
+    @media (max-width: 680px) { main { width: min(100% - 24px, 1440px); padding-top: 28px; } .grid { grid-template-columns: 1fr; } .warning { grid-template-columns: 1fr; } .matrix { overflow-x: auto; } table { min-width: 1000px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="eyebrow">Mercurii · Competitive landscape · 13 Oct 2026</div>
+    <h1>Privacy is crowded. Private company operations are the wedge.</h1>
+    <p class="lede">Mercurii competes across stablecoin finance operations, private payroll, treasury controls, and agent spend. The opportunity is not to be a better wallet. It is to make the company’s operating state confidential and govern every human and agent through explicit program policy.</p>
+
+    <section class="thesis">
+      <strong>Recommended position</strong>
+      <p>The confidential finance operating system for USDC-first teams.</p>
+    </section>
+
+    <h2>Landscape by customer job</h2>
+    <section class="grid">
+      <article class="card"><div class="kind">Finance OS · direct</div><h3>Request Finance</h3><p><b>Strongest threat.</b> Full AP/AR, payroll, approvals, accounting, fiat rails, and private payments. Mercurii must win on private operating state, self-custodial policy, and Solana-native agent permissions.</p></article>
+      <article class="card"><div class="kind">Private payroll · direct</div><h3>Umbra / Toku</h3><p>Both validate salary confidentiality. Umbra is non-custodial and Solana-native; Toku owns compliance and enterprise distribution. Mercurii must be broader than payroll without becoming unfocused.</p></article>
+      <article class="card"><div class="kind">Treasury policy · adjacent</div><h3>Squads / Utila</h3><p>They prove teams value multisig/MPC policy, controls, and security. Their core products do not make the whole operating ledger confidential by default.</p></article>
+      <article class="card"><div class="kind">Agent finance · adjacent</div><h3>Ramp</h3><p>Ramp already provides agent identities, budgets, approvers, audit trails, and a managed Solana x402 wallet. “Agent spend” alone is not a moat.</p></article>
+      <article class="card"><div class="kind">Payroll · adjacent</div><h3>Rise</h3><p>Global payroll, compliance, fiat/crypto choice, and 190-country coverage. A reminder that payment execution without compliance workflows is only part of the job.</p></article>
+      <article class="card"><div class="kind">Privacy infra</div><h3>MagicBlock / Solana privacy</h3><p>Core enablers and potential platform risk. Mercurii must own workflow, distribution, data model, and trust—not pretend the underlying primitive is proprietary.</p></article>
+      <article class="card"><div class="kind">Status quo</div><h3>Wallet + spreadsheet + chat</h3><p>The actual incumbent: cheap, flexible, and familiar. Mercurii wins only when private approvals and reconciliation save enough risk and time to justify switching.</p></article>
+      <article class="card"><div class="kind">Precedent</div><h3>Utopia / Coinshift</h3><p>Crypto treasury products can gain volume and still wind down or pivot. Durable distribution, recurring pain, and willingness to pay matter more than headline transaction volume.</p></article>
+    </section>
+
+    <h2>Capability comparison</h2>
+    <div class="matrix">
+      <table>
+        <thead><tr><th>Product</th><th>Private transfers</th><th>Private operating records</th><th>Program-enforced team policy</th><th>Payroll / AP workflow</th><th>Agent controls</th><th>Fiat / compliance rails</th></tr></thead>
+        <tbody>
+          <tr><td><b>Mercurii</b></td><td class="yes">Yes, devnet proof</td><td class="yes">Core thesis</td><td class="yes">Core thesis</td><td class="partial">MVP; not full HR/EOR</td><td class="yes">Isolated capped float</td><td class="no">No</td></tr>
+          <tr><td><b>Request Finance</b></td><td class="yes">Private routing</td><td class="partial">Central app records</td><td class="partial">Approvals / roles</td><td class="yes">Strong</td><td class="partial">AI/AP automation</td><td class="yes">Strong</td></tr>
+          <tr><td><b>Umbra Payroll</b></td><td class="yes">Yes</td><td class="partial">Payroll-focused</td><td class="partial">Company payroll access</td><td class="yes">Payroll only</td><td class="no">Not core</td><td class="partial">Bank withdrawal</td></tr>
+          <tr><td><b>Toku + Aleo</b></td><td class="yes">Yes</td><td class="yes">Private payroll records</td><td class="partial">Enterprise workflow</td><td class="yes">Very strong</td><td class="no">Not core</td><td class="yes">Very strong</td></tr>
+          <tr><td><b>Squads</b></td><td class="no">Public ledger</td><td class="no">Transparency-led</td><td class="yes">Very strong</td><td class="partial">Treasury actions</td><td class="partial">Smart account modules</td><td class="no">Limited</td></tr>
+          <tr><td><b>Utila</b></td><td class="partial">Network-dependent</td><td class="partial">Enterprise app data</td><td class="yes">Very strong</td><td class="partial">Payments infra</td><td class="partial">API policy</td><td class="yes">Partner network</td></tr>
+          <tr><td><b>Ramp</b></td><td class="no">Not core</td><td class="partial">Private SaaS records</td><td class="yes">Strong</td><td class="yes">Strong finance suite</td><td class="yes">Strongest distribution</td><td class="yes">Strongest</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <section class="warning">
+      <h2>Strategic warning</h2>
+      <p>Mercurii has a differentiated architecture, not yet a durable moat. The moat becomes real only through current end-to-end proof, external security validation, design-partner retention, accounting/payroll integrations, and a trusted system of record. Until then, competitors can reproduce features.</p>
+    </section>
+
+    <div class="foot"><span>Prepared from public product pages, documentation, and the local Mercurii repository.</span><span>Research artifact · not legal or investment advice</span></div>
+  </main>
+</body>
+</html>
