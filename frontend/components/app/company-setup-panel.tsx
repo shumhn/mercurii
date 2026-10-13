@@ -125,7 +125,7 @@ function storeReceipt(company: string, receipt: ReceiptState | null): void {
 export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController; onComplete: () => void }) {
   const [termsKey] = useState(app.session?.company ?? "");
   const [storedTerms] = useState(() => readStoredTerms(termsKey));
-  const [finance, setFinance] = useState(storedTerms?.finance ?? app.policy.value?.finance ?? app.session?.address ?? "");
+  const finance = app.policy.value?.finance ?? storedTerms?.finance ?? app.session?.address ?? "";
   const [monthlyLimit, setMonthlyLimit] = useState(positiveAmount(storedTerms?.monthlyLimit) ??
     positiveAmount(app.policy.value ? (Number(app.policy.value.monthlyLimitMicro) / 1_000_000).toString() : undefined) ?? "");
   const [agentCap, setAgentCap] = useState(positiveAmount(storedTerms?.agentCap) ??
@@ -221,7 +221,7 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
    * finalized, but a confirmed receipt must still advance to the next step. */
   function setupInput(): Record<string, unknown> {
     try { if (new PublicKey(finance).toBase58() !== finance) throw new Error(); }
-    catch { throw new Error("Enter a valid Finance wallet"); }
+    catch { throw new Error("The company administrator wallet is invalid"); }
     const monthlyLimitMicro = parseUsdc(monthlyLimit);
     const agentCapMicro = parseUsdc(agentCap);
     if (agentCapMicro > monthlyLimitMicro) throw new Error("Agent cap must fit within the monthly company limit");
@@ -359,10 +359,8 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
 
       {app.session?.role !== "founder" ? <p className="mt-6 rounded-xl bg-app-canvas p-4 text-sm text-app-muted">Only the registered Founder can complete company setup.</p> : <>
         {!setupReady && !step && <form className="mt-7 rounded-2xl border border-app-line bg-app-canvas p-5" onSubmit={(event) => { event.preventDefault(); void action(prepare); }}>
-          <div><h3 className="font-semibold">Company rules</h3><p className="mt-1 text-sm leading-6 text-app-muted">These become the private spending rules in step 2. Keep the original Finance wallet for this company.</p></div>
-          <div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium sm:col-span-2" htmlFor="setup-finance">Finance wallet
-              <input id="setup-finance" className={`${inputClass} mt-2 font-mono`} value={finance} disabled={controlsLocked || busy} onChange={(e) => changeTerms(() => setFinance(e.target.value))} placeholder="Solana address" autoComplete="off" spellCheck={false} /></label>
-            <label className="text-sm font-medium" htmlFor="setup-monthly-limit">Monthly limit (USDC)
+          <div><h3 className="font-semibold">Company rules</h3><p className="mt-1 text-sm leading-6 text-app-muted">Set the private company spending rules. Your Founder wallet remains the administrator throughout setup.</p></div>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium" htmlFor="setup-monthly-limit">Monthly limit (USDC)
               <input id="setup-monthly-limit" className={`${inputClass} mt-2`} value={monthlyLimit} disabled={controlsLocked || busy} onChange={(e) => changeTerms(() => setMonthlyLimit(e.target.value))} inputMode="decimal" autoComplete="off" /></label>
             <label className="text-sm font-medium" htmlFor="setup-agent-cap">AI-agent cap (USDC)
               <input id="setup-agent-cap" className={`${inputClass} mt-2`} value={agentCap} disabled={controlsLocked || busy} onChange={(e) => changeTerms(() => setAgentCap(e.target.value))} inputMode="decimal" autoComplete="off" /></label></div>
@@ -385,7 +383,7 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
       {message && !error && <p role="status" className="mt-5 rounded-xl bg-brand/5 p-4 text-sm text-brand">{message}</p>}
     </section>
     <aside className={`${cardClass} h-fit p-5 sm:p-7`}><p className="text-xs font-bold uppercase tracking-[.12em] text-app-muted">Setup summary</p><h2 className="mt-2 text-lg font-semibold">Company controls</h2>
-      <dl className="mt-5 space-y-4 text-sm"><div><dt className="text-xs text-app-muted">Finance wallet</dt><dd className="mt-1 break-all font-mono text-xs">{app.policy.value?.finance ?? (finance || "Not set")}</dd></div>
+      <dl className="mt-5 space-y-4 text-sm"><div><dt className="text-xs text-app-muted">Company administrator</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.address ?? "Not connected"}</dd></div>
         <div className="grid grid-cols-2 gap-3"><div><dt className="text-xs text-app-muted">Monthly limit</dt><dd className="mt-1 font-semibold tabular-nums">{app.policy.value?.monthlyLimitMicro && app.policy.value.monthlyLimitMicro !== "0" ? formatUsdc(app.policy.value.monthlyLimitMicro) : monthlyLimit ? `${monthlyLimit} USDC` : "Not set"}</dd></div><div><dt className="text-xs text-app-muted">AI-agent cap</dt><dd className="mt-1 font-semibold tabular-nums">{app.policy.value?.agentCapMicro && app.policy.value.agentCapMicro !== "0" ? formatUsdc(app.policy.value.agentCapMicro) : agentCap ? `${agentCap} USDC` : "Not set"}</dd></div></div>
         <div><dt className="text-xs text-app-muted">Company policy</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.company}</dd></div></dl>
       <div className="mt-6 rounded-xl bg-app-canvas p-4"><div className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden /><p className="text-xs leading-5 text-app-muted">Mercurii keeps this setup simple: your wallet signs, MagicBlock validates the private state, and each completed action keeps an explorer proof.</p></div></div>

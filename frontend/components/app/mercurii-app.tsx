@@ -94,7 +94,6 @@ export function MercuriiApp() {
   const [registerBusy, setRegisterBusy] = useState(false);
   const [registerMessage, setRegisterMessage] = useState<string | null>(null);
   const [registerError, setRegisterError] = useState<string | null>(null);
-  const [bootstrapFinance, setBootstrapFinance] = useState("");
   const [bootstrapStep, setBootstrapStep] = useState<BootstrapStep | null>(null);
   const [walletOptions, setWalletOptions] = useState<WalletOption[]>([]);
   const [walletChoice, setWalletChoice] = useState<WalletOption | null>(null);
@@ -174,7 +173,9 @@ export function MercuriiApp() {
       const wallet = selectedWallet ?? walletChoice?.wallet;
       if (!wallet) throw new Error("Choose the Founder wallet first");
       const founder = (await wallet.connect()).publicKey.toBase58();
-      const finance = bootstrapFinance.trim() ? new PublicKey(bootstrapFinance.trim()).toBase58() : founder;
+      // The Founder is the initial financial administrator. A separate Finance
+      // teammate belongs in Team access after the company exists.
+      const finance = founder;
       const result = await api<{ status: "sign" | "shell_exists"; company: string;
         transaction?: PreparedTransaction }>("/v1/companies/bootstrap/prepare", { body: { founder, finance } });
       app.setCompany(result.company);
@@ -183,7 +184,7 @@ export function MercuriiApp() {
         setRegisterMessage("This public shell already exists on chain. Register it below to unlock private setup.");
       } else if (result.transaction) {
         setBootstrapStep({ company: result.company, founder, finance, transaction: result.transaction });
-        setRegisterMessage("Public company shell prepared. Review the Founder and Finance wallets before signing.");
+        setRegisterMessage("Company account prepared. Review the Founder wallet and company address before signing.");
       }
     } catch (cause) { setRegisterError(cause instanceof Error ? cause.message : "Could not prepare company shell"); }
     finally { setRegisterBusy(false); }
@@ -334,8 +335,6 @@ export function MercuriiApp() {
           /> : isNewCompany ? <NewCompanyStart
             backendOnline={app.backendStatus === "online"}
             busy={registerBusy}
-            finance={bootstrapFinance}
-            setFinance={(value) => { setBootstrapFinance(value); setBootstrapStep(null); }}
             bootstrapStep={bootstrapStep}
             message={registerMessage}
             error={registerError}
@@ -422,9 +421,9 @@ function WelcomeStart({ rememberedCompany, onStartCompany, onJoinCompany }: {
   </div>;
 }
 
-function NewCompanyStart({ backendOnline, busy, finance, setFinance, bootstrapStep, message, error,
+function NewCompanyStart({ backendOnline, busy, bootstrapStep, message, error,
   onPrepare, onSign, onInspect, onRetry, onStartOver, onRegister, onConnect, onUseExisting }: {
-  backendOnline: boolean; busy: boolean; finance: string; setFinance: (value: string) => void;
+  backendOnline: boolean; busy: boolean;
   bootstrapStep: BootstrapStep | null; message: string | null; error: string | null;
   onPrepare: () => void; onSign: () => void; onInspect: () => void; onRetry: () => void;
   onStartOver: () => void;
@@ -439,14 +438,11 @@ function NewCompanyStart({ backendOnline, busy, finance, setFinance, bootstrapSt
       <h2 className="mt-5 text-2xl font-semibold tracking-tight">Create your company account.</h2>
       <p className="mt-2 max-w-2xl text-sm leading-6 text-app-muted">First, connect the wallet that will be the Founder. You&apos;ll review one company-account transaction, then Mercurii will guide you through private operations.</p>
 
-      <details className="mt-7 max-w-2xl rounded-xl border border-app-line bg-app-canvas p-4" open={Boolean(finance)}>
-        <summary className="cursor-pointer text-sm font-semibold text-foreground">Add a Finance wallet now <span className="font-normal text-app-muted">(optional)</span></summary>
-        <div className="mt-4"><label htmlFor="finance-wallet" className="mb-2 block text-sm font-semibold">Finance wallet address</label>
-          <input id="finance-wallet" className={`${inputClass} font-mono`} value={finance} disabled={signed}
-            onChange={(event) => setFinance(event.target.value)} placeholder="Example: a teammate's Solana address"
-            autoComplete="off" spellCheck={false} />
-          <p className="mt-2 text-xs leading-5 text-app-muted">Leave this blank to use the Founder wallet. You can invite Finance after setup.</p></div>
-      </details>
+      <div className="mt-7 max-w-2xl rounded-xl border border-app-line bg-app-canvas p-4">
+        <div className="flex gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg bg-brand/10 text-brand"><ShieldCheck className="size-4" aria-hidden /></span>
+          <div><p className="text-sm font-semibold">Your wallet starts as the company administrator.</p>
+            <p className="mt-1 text-xs leading-5 text-app-muted">Create the company first. Add teammates and assign their permissions later from Team access.</p></div></div>
+      </div>
 
       {!bootstrapStep ? registered ? <div className="mt-6 flex flex-wrap items-center gap-3">
         <button className={buttonClass} disabled={busy || !backendOnline} onClick={onConnect}>
@@ -456,7 +452,7 @@ function NewCompanyStart({ backendOnline, busy, finance, setFinance, bootstrapSt
         {busy ? "Connecting wallet…" : "Connect Founder wallet"}<ArrowRight className="size-4" aria-hidden />
       </button> : <div className="mt-7 rounded-2xl border border-app-line bg-app-canvas p-5 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-sm font-semibold">Company account prepared</p>
-          <p className="mt-1 text-xs leading-5 text-app-muted">Founder {shortAddress(bootstrapStep.founder)} · Finance {shortAddress(bootstrapStep.finance)}</p></div>
+          <p className="mt-1 text-xs leading-5 text-app-muted">Founder {shortAddress(bootstrapStep.founder)} · initial administrator</p></div>
           <span className="rounded-full bg-brand/10 px-3 py-1 text-xs font-semibold text-brand">Solana devnet</span></div>
         <p className="mt-4 rounded-xl border border-app-line bg-white p-3 text-xs text-app-muted">Policy address:{" "}
           <a className={explorerLinkClass} href={devnetExplorer("address", bootstrapStep.company)} target="_blank" rel="noreferrer">
@@ -487,7 +483,7 @@ function NewCompanyStart({ backendOnline, busy, finance, setFinance, bootstrapSt
     <section className={`${cardClass} p-6 sm:p-8`}>
       <p className="text-xs font-bold uppercase tracking-wider text-app-muted">Your setup path</p>
       <ol className="mt-6 space-y-5" aria-label="Company setup steps">{[
-        ["01", "Create company account", "Founder signs the company account and chooses the Finance wallet."],
+        ["01", "Create company account", "Founder connects their wallet and creates the company."],
         ["02", "Activate private operations", "A guided three-step setup turns on privacy, spending rules, and the balance tracker."],
         ["03", "Deposit private USDC", "Fund the private treasury and verify the balance snapshot."],
         ["04", "Invite the team", "Grant roles, approve payments, run payroll, and add bounded agents."],
