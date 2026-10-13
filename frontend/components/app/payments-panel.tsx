@@ -7,12 +7,19 @@ import { parseUsdc, shortAddress, type PaymentRow } from "@/lib/mercurii-client"
 import { signPrepared, type PreparedTransaction } from "@/lib/mercurii-wallet";
 import type { MercuriiController } from "./use-mercurii";
 import { buttonClass, cardClass, DataState, inputClass, Notice, PaymentItem, secondaryButtonClass } from "./mercurii-app";
+import { ReceiptProof, TxProof } from "./tx-proof";
+
+type ReceiptState = { id: string; signed: string; status: string;
+  signature?: string | null; chain?: "base" | "ephemeral" };
+type ReceiptResponse = { receipt: { status: string; signature?: string | null;
+  chain?: "base" | "ephemeral" } };
 
 export type PaymentDraft = { recipient: string; amountMicro: number; paymentId?: string };
 type FlowResult = { paymentId: string; request?: string; step: { status: string; operation?: string | null; actor?: string | null; reason?: string };
   observation?: { status?: string }; transaction?: PreparedTransaction | null; receiptId?: string;
   paymentJob?: { prepare: string; status: string }; record?: { state: string } };
-type ReceiptResult = { status?: string; receipt?: { status?: string }; next?: string };
+type ReceiptResult = { status?: string; receipt?: { status?: string;
+  signature?: string | null; chain?: "base" | "ephemeral" }; next?: string };
 type ExecutionStatus = { record: { state: string; signature: string | null }; requestStatus: string;
   chainStatus: string | null; integrityWarning: string | null; snapshotNeedsSync: boolean | null };
 type RejectionStep = { status: "build" | "wait" | "ready"; receiptId?: string;
@@ -35,7 +42,7 @@ export function PaymentsPanel({ app, draft, onDraftChange }: { app: MercuriiCont
   const [lookupId, setLookupId] = useState("");
   const [terms, setTerms] = useState<Record<string, unknown> | null>(null);
   const [flow, setFlow] = useState<FlowResult | null>(null);
-  const [receipt, setReceipt] = useState<{ id: string; signed: string; status: string } | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptState | null>(null);
   const [executionSigned, setExecutionSigned] = useState<{ paymentId: string; bytes: string; broadcast: string } | null>(null);
   const [executionStatus, setExecutionStatus] = useState<ExecutionStatus | null>(null);
   const [rejection, setRejection] = useState<RejectionStep | null>(null);
@@ -125,9 +132,10 @@ export function PaymentsPanel({ app, draft, onDraftChange }: { app: MercuriiCont
     // Keep the exact signed bytes in memory. An uncertain network response must
     // be reconciled against this receipt, never silently rebuilt.
     setReceipt({ id, signed: signed.signedTransactionBase64, status: "signed" });
-    const confirmed = await app.request<{ receipt: { status: string }; broadcast: string }>(`/v1/onboarding/receipts/${id}/submit`,
+    const confirmed = await app.request<ReceiptResponse & { broadcast: string }>(`/v1/onboarding/receipts/${id}/submit`,
       { signedTransactionBase64: signed.signedTransactionBase64 });
-    setReceipt({ id, signed: signed.signedTransactionBase64, status: confirmed.receipt.status });
+    setReceipt({ id, signed: signed.signedTransactionBase64, status: confirmed.receipt.status,
+      signature: confirmed.receipt.signature ?? null, chain: confirmed.receipt.chain });
     setMessage(`Receipt ${confirmed.receipt.status} · broadcast ${confirmed.broadcast}. Continue when the private state has settled.`);
     await app.refresh();
   }
@@ -137,7 +145,8 @@ export function PaymentsPanel({ app, draft, onDraftChange }: { app: MercuriiCont
     if (!id) throw new Error("There is no receipt to reconcile");
     const result = await app.request<ReceiptResult>(`/v1/onboarding/receipts/${id}/reconcile`,
       receipt ? { signedTransactionBase64: receipt.signed } : {});
-    if (receipt) setReceipt({ ...receipt, status: result.receipt?.status ?? result.status ?? "pending" });
+    if (receipt) setReceipt({ ...receipt, status: result.receipt?.status ?? result.status ?? "pending",
+      signature: result.receipt?.signature ?? receipt.signature, chain: result.receipt?.chain ?? receipt.chain });
     setMessage(result.next ?? "Receipt reconciled");
     await app.refresh();
   }
@@ -247,7 +256,7 @@ export function PaymentsPanel({ app, draft, onDraftChange }: { app: MercuriiCont
         {flow?.transaction && <div className="mt-5 rounded-xl border border-app-line bg-app-canvas p-4 text-sm"><div className="flex items-center gap-2 font-semibold"><ShieldCheck className="size-4 text-brand" />Sign {flow.transaction.operation ?? flow.step.operation}</div>
           <p className="mt-2 text-app-muted">Signer: {shortAddress(flow.step.actor ?? session.address)} · {flow.transaction.sendTo === "ephemeral" ? "Private Ephemeral Rollup" : "Solana devnet"}</p></div>}
         <div className="mt-5 flex flex-wrap gap-3">{flow?.transaction && <button className={buttonClass} disabled={busy || Boolean(receipt) || Boolean(flow.step.actor && flow.step.actor !== session.address)} onClick={() => void run(signStep)}>{receipt ? "Step signed · reconcile" : "Review & sign in wallet"}</button>}
-          {(receipt || flow?.receiptId) && <button className={secondaryButtonClass} disabled={busy} onClick={() => void run(reconcile)}>Reconcile receipt</button>}
+          {(receipt || flow?.receiptId) && <button className={secondaryButtonClass} disabled={busy} onClick={() => void run(reconcile)}>Check status</button>}
           {flow?.step.status === "ready_to_execute" && (app.capabilities.paymentExecution ?
             <button className={buttonClass} disabled={busy || executionSigned?.paymentId === currentId} onClick={() => void run(execute)}>{executionSigned?.paymentId === currentId ? "Execution signed · inspect" : "Sign & submit payment"}</button> :
             <span className="rounded-xl bg-amber-50 px-4 py-2 text-sm text-amber-800">Execution is disabled on this backend</span>)}
@@ -259,7 +268,8 @@ export function PaymentsPanel({ app, draft, onDraftChange }: { app: MercuriiCont
               {rejection?.transaction && <button className={buttonClass} disabled={busy || Boolean(rejectionSigned)} onClick={() => void run(signRejection)}>Review & sign rejection</button>}
               {rejectionSigned && <><button className={secondaryButtonClass} disabled={busy} onClick={() => void run(reconcileRejection)}>Reconcile rejection</button>
                 {rejectionSigned.status !== "confirmed" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void run(retryRejection)}>Retry same signature</button>}</>}</div></div>}
-        {(receipt || flow?.receiptId) && <p className="mt-3 text-xs text-app-muted">Receipt {shortAddress(receipt?.id ?? flow?.receiptId)} · {receipt?.status ?? "check status"}</p>}
+        {receipt && <div className="mt-4"><ReceiptProof receipt={receipt} label="Request step" /></div>}
+        {!receipt && flow?.receiptId && <p className="mt-3 text-xs text-app-muted">Receipt pending signature · check status to continue</p>}
         {executionSigned?.paymentId === currentId && <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm">
           <p className="font-semibold text-amber-950">Original signed execution · {executionSigned.broadcast}</p>
           <p className="mt-1 text-amber-900">Keep this tab open until the chain status is known. A retry uses these exact signed bytes.</p>
@@ -267,8 +277,9 @@ export function PaymentsPanel({ app, draft, onDraftChange }: { app: MercuriiCont
             {executionSigned.broadcast === "uncertain" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void run(retryOriginalExecution)}>Retry same signature</button>}</div>
         </div>}
         {executionStatus && <div className="mt-4 rounded-xl border border-app-line bg-app-canvas p-4 text-sm">
-          <p className="font-semibold">Request {executionStatus.requestStatus} · chain {executionStatus.chainStatus ?? "unavailable"}</p>
-          <p className="mt-1 text-app-muted">Job: {executionStatus.record.state} · signature: {shortAddress(executionStatus.record.signature)}</p>
+          <p className="font-semibold">Request {executionStatus.requestStatus.replaceAll("_", " ")} · chain {executionStatus.chainStatus ?? "unavailable"}</p>
+          <p className="mt-1 text-app-muted">Job: {executionStatus.record.state.replaceAll("_", " ")}</p>
+          {executionStatus.record.signature && <div className="mt-3"><TxProof signature={executionStatus.record.signature} label="Settlement transaction" status={executionStatus.chainStatus} /></div>}
           {executionStatus.integrityWarning && <p role="alert" className="mt-2 text-red-700">{executionStatus.integrityWarning}</p>}
           {executionStatus.snapshotNeedsSync && <p className="mt-2 text-amber-800">Founder must sync the treasury snapshot from Records.</p>}
           {executionStatus.requestStatus === "approved" && executionStatus.record.state === "prepared" &&

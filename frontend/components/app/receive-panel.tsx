@@ -2,13 +2,18 @@
 
 import { useState } from "react";
 import { ArrowDownLeft, ShieldCheck } from "lucide-react";
-import { formatUsdc, parseUsdc, shortAddress } from "@/lib/mercurii-client";
+import { formatUsdc, parseUsdc } from "@/lib/mercurii-client";
 import { signPrepared, type PreparedTransaction } from "@/lib/mercurii-wallet";
 import type { MercuriiController } from "./use-mercurii";
 import { buttonClass, cardClass, inputClass, Notice, secondaryButtonClass } from "./mercurii-app";
+import { ReceiptProof } from "./tx-proof";
 
 type FundingStep = { status: string; observedBalanceMicro?: string | null;
   receiptId?: string | null; transaction?: PreparedTransaction | null };
+type ReceiptState = { id: string; signed: string; status: string;
+  signature?: string | null; chain?: "base" | "ephemeral" };
+type ReceiptResponse = { receipt: { status: string; signature?: string | null;
+  chain?: "base" | "ephemeral" } };
 
 export function ReceivePanel({ app }: { app: MercuriiController }) {
   const founder = app.session?.role === "founder";
@@ -16,7 +21,7 @@ export function ReceivePanel({ app }: { app: MercuriiController }) {
   const [fundingId, setFundingId] = useState("");
   const [terms, setTerms] = useState<Record<string, unknown> | null>(null);
   const [step, setStep] = useState<FundingStep | null>(null);
-  const [receipt, setReceipt] = useState<{ id: string; signed: string; status: string } | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptState | null>(null);
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState("");
   async function action(task: () => Promise<void>) { setBusy(true); setError(null); setNotice(""); try { await task(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Funding action failed"); } finally { setBusy(false); } }
@@ -48,22 +53,26 @@ export function ReceivePanel({ app }: { app: MercuriiController }) {
     const signed = await signPrepared(app.wallet, app.session!.address, step.transaction);
     const id = step.receiptId;
     setReceipt({ id, signed: signed.signedTransactionBase64, status: "signed" });
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(`/v1/onboarding/receipts/${id}/submit`,
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(`/v1/onboarding/receipts/${id}/submit`,
       { signedTransactionBase64: signed.signedTransactionBase64 });
-    setReceipt({ id, signed: signed.signedTransactionBase64, status: result.receipt.status });
+    setReceipt({ id, signed: signed.signedTransactionBase64, status: result.receipt.status,
+      signature: result.receipt.signature ?? null, chain: result.receipt.chain });
     setNotice(`Receipt ${result.receipt.status} · broadcast ${result.broadcast}. Refresh after the private treasury snapshot syncs.`); await app.refresh();
   }
   async function reconcile() {
     if (!receipt) return;
-    const result = await app.request<{ receipt: { status: string }; next: string }>(`/v1/onboarding/receipts/${receipt.id}/reconcile`,
+    const result = await app.request<ReceiptResponse & { next: string }>(`/v1/onboarding/receipts/${receipt.id}/reconcile`,
       { signedTransactionBase64: receipt.signed });
-    setReceipt({ ...receipt, status: result.receipt.status }); setNotice(result.next); await app.refresh();
+    setReceipt({ ...receipt, status: result.receipt.status,
+      signature: result.receipt.signature ?? receipt.signature, chain: result.receipt.chain ?? receipt.chain });
+    setNotice(result.next); await app.refresh();
   }
   async function retryOriginal() {
     if (!receipt) throw new Error("No signed deposit to retry");
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${receipt.id}/submit`, { signedTransactionBase64: receipt.signed });
-    setReceipt({ ...receipt, status: result.receipt.status });
+    setReceipt({ ...receipt, status: result.receipt.status,
+      signature: result.receipt.signature ?? receipt.signature, chain: result.receipt.chain ?? receipt.chain });
     setNotice(`Original signature: ${result.receipt.status} · broadcast ${result.broadcast}.`);
     await app.refresh();
   }
@@ -78,8 +87,8 @@ export function ReceivePanel({ app }: { app: MercuriiController }) {
           {terms && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(next)}>Check next step</button>}</div>
         {step && <div className="mt-6 rounded-xl border border-app-line bg-app-canvas p-5"><p className="font-semibold capitalize">{step.status.replaceAll("_", " ")}</p>
           <p className="mt-1 text-sm text-app-muted">Observed private balance: {formatUsdc(step.observedBalanceMicro)}</p>
-          {step.transaction && <div className="mt-4 flex flex-wrap items-center gap-3"><span className="inline-flex items-center gap-2 text-sm"><ShieldCheck className="size-4 text-brand" />{step.transaction.operation ?? "Funding step"} · {step.transaction.sendTo}</span><button className={buttonClass} disabled={busy || receipt?.id === step.receiptId} onClick={() => void action(sign)}>{receipt?.id === step.receiptId ? "Signed · reconcile" : "Review & sign"}</button></div>}
-          {receipt && <div className="mt-4 flex flex-wrap items-center gap-2 text-xs text-app-muted"><span>Receipt {shortAddress(receipt.id)} · {receipt.status}</span><button className="font-semibold text-brand" disabled={busy} onClick={() => void action(reconcile)}>Reconcile</button>{receipt.status !== "confirmed" && <button className="font-semibold text-brand" disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</div>}</div>}
+          {step.transaction && <div className="mt-4 flex flex-wrap items-center gap-3"><span className="inline-flex items-center gap-2 text-sm"><ShieldCheck className="size-4 text-brand" />{step.transaction.operation ?? "Funding step"} · {step.transaction.sendTo === "ephemeral" ? "MagicBlock private network" : "Solana devnet"}</span><button className={buttonClass} disabled={busy || receipt?.id === step.receiptId} onClick={() => void action(sign)}>{receipt?.id === step.receiptId ? "Signed · reconcile" : "Review & sign"}</button></div>}
+          {receipt && <div className="mt-4"><ReceiptProof receipt={receipt} label="Deposit" /><div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-app-muted"><button className="font-semibold text-brand" disabled={busy} onClick={() => void action(reconcile)}>Check status</button>{receipt.status !== "confirmed" && <button className="font-semibold text-brand" disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</div></div>}</div>}
       </>}
       {(error || notice) && <p role={error ? "alert" : "status"} className={`mt-5 rounded-xl p-4 text-sm ${error ? "bg-red-50 text-red-800" : "bg-brand/5 text-brand"}`}>{error ?? notice}</p>}
     </section>
@@ -92,15 +101,18 @@ export function WithdrawPanel({ app }: { app: MercuriiController }) {
   const [amount, setAmount] = useState(""); const [withdrawalId, setWithdrawalId] = useState("");
   const [terms, setTerms] = useState<Record<string, unknown> | null>(null);
   const [step, setStep] = useState<FundingStep | null>(null);
-  const [receipt, setReceipt] = useState<{ id: string; signed: string; status: string } | null>(null);
+  const [receipt, setReceipt] = useState<ReceiptState | null>(null);
   const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null); const [notice, setNotice] = useState("");
   async function action(task: () => Promise<void>) { setBusy(true); setError(null); setNotice(""); try { await task(); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Withdrawal action failed"); } finally { setBusy(false); } }
   async function prepare() {
     if (receipt && !["confirmed", "failed"].includes(receipt.status)) throw new Error("Reconcile the signed withdrawal before preparing another one.");
+    const amountMicro = parseUsdc(amount);
+    const availableMicro = BigInt(app.recipientBalance.value?.balanceMicro ?? "0");
+    if (BigInt(amountMicro) > availableMicro) throw new Error("Withdrawal exceeds your private recipient balance");
     const id = receipt && ["confirmed", "failed"].includes(receipt.status) || !withdrawalId ? crypto.randomUUID() : withdrawalId;
     setWithdrawalId(id);
-    const input = { owner: app.session!.address, amountMicro: parseUsdc(amount), withdrawalId: id };
+    const input = { owner: app.session!.address, amountMicro, withdrawalId: id };
     setTerms(input); setStep(null); setReceipt(null);
     const result = await app.request<FundingStep>("/v1/onboarding/recipient-withdraw/next", input);
     setStep(result); setNotice(`Withdrawal step: ${result.status.replaceAll("_", " ")}`);
@@ -117,23 +129,27 @@ export function WithdrawPanel({ app }: { app: MercuriiController }) {
     if (receipt?.id === step.receiptId) throw new Error("This withdrawal was already signed. Reconcile or retry its original signature.");
     const signed = await signPrepared(app.wallet, app.session!.address, step.transaction);
     setReceipt({ id: step.receiptId, signed: signed.signedTransactionBase64, status: "signed" });
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${step.receiptId}/submit`, { signedTransactionBase64: signed.signedTransactionBase64 });
-    setReceipt({ id: step.receiptId, signed: signed.signedTransactionBase64, status: result.receipt.status });
+    setReceipt({ id: step.receiptId, signed: signed.signedTransactionBase64, status: result.receipt.status,
+      signature: result.receipt.signature ?? null, chain: result.receipt.chain });
     setNotice(`Receipt ${result.receipt.status} · broadcast ${result.broadcast}. Confirm before starting another withdrawal.`);
     await app.refresh();
   }
   async function reconcile() {
     if (!receipt) return;
-    const result = await app.request<{ receipt: { status: string }; next: string }>(
+    const result = await app.request<ReceiptResponse & { next: string }>(
       `/v1/onboarding/receipts/${receipt.id}/reconcile`, { signedTransactionBase64: receipt.signed });
-    setReceipt({ ...receipt, status: result.receipt.status }); setNotice(result.next); await app.refresh();
+    setReceipt({ ...receipt, status: result.receipt.status,
+      signature: result.receipt.signature ?? receipt.signature, chain: result.receipt.chain ?? receipt.chain });
+    setNotice(result.next); await app.refresh();
   }
   async function retryOriginal() {
     if (!receipt) throw new Error("No signed withdrawal to retry");
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${receipt.id}/submit`, { signedTransactionBase64: receipt.signed });
-    setReceipt({ ...receipt, status: result.receipt.status });
+    setReceipt({ ...receipt, status: result.receipt.status,
+      signature: result.receipt.signature ?? receipt.signature, chain: result.receipt.chain ?? receipt.chain });
     setNotice(`Original signature: ${result.receipt.status} · broadcast ${result.broadcast}.`);
     await app.refresh();
   }
@@ -144,9 +160,10 @@ export function WithdrawPanel({ app }: { app: MercuriiController }) {
         <div className="mt-5 flex flex-wrap gap-3"><button className={buttonClass} disabled={busy || !amount || Boolean(receipt && !["confirmed", "failed"].includes(receipt.status))} onClick={() => void action(prepare)}>Prepare withdrawal</button>
           {terms && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(checkNext)}>Check next step</button>}
           {step?.transaction && <button className={secondaryButtonClass} disabled={busy || receipt?.id === step.receiptId} onClick={() => void action(sign)}>{receipt?.id === step.receiptId ? "Signed · reconcile" : "Review & sign"}</button>}
-          {receipt && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Reconcile receipt</button>}
+          {receipt && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Check status</button>}
           {receipt && receipt.status !== "confirmed" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</div>
-        {step && <p className="mt-4 text-sm text-app-muted">Step: {step.status.replaceAll("_", " ")}{step.receiptId ? ` · Receipt ${shortAddress(step.receiptId)}` : ""}</p>}
+        {receipt && <div className="mt-4"><ReceiptProof receipt={receipt} label="Withdrawal" /></div>}
+        {step && !receipt && <p className="mt-4 text-sm text-app-muted">Step: {step.status.replaceAll("_", " ")}</p>}
       </>}
       {(error || notice) && <p role={error ? "alert" : "status"} className={`mt-5 rounded-xl p-4 text-sm ${error ? "bg-red-50 text-red-800" : "bg-brand/5 text-brand"}`}>{error ?? notice}</p>}</section>
     <section className={`${cardClass} h-fit p-5 sm:p-7`}><p className="text-xs font-semibold uppercase tracking-wider text-app-muted">Your private recipient balance</p><p className="mt-3 text-3xl font-semibold">{formatUsdc(app.recipientBalance.value?.balanceMicro)}</p>

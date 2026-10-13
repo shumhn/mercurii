@@ -7,9 +7,13 @@ import { shortAddress } from "@/lib/mercurii-client";
 import { signPrepared, type PreparedTransaction } from "@/lib/mercurii-wallet";
 import type { MercuriiController } from "./use-mercurii";
 import { buttonClass, cardClass, secondaryButtonClass } from "./mercurii-app";
+import { ReceiptProof } from "./tx-proof";
 
 type Step = { status: "build" | "wait"; transaction?: PreparedTransaction; receiptId?: string };
-type Signed = { id: string; bytes: string; status: string };
+type Signed = { id: string; bytes: string; status: string;
+  signature?: string | null; chain?: "base" | "ephemeral" };
+type ReceiptResponse = { receipt: { status: string; signature?: string | null;
+  chain?: "base" | "ephemeral" } };
 
 export function ViewerSharePanel({ app }: { app: MercuriiController }) {
   const [request, setRequest] = useState(""); const [grantAddress, setGrantAddress] = useState("");
@@ -52,25 +56,28 @@ export function ViewerSharePanel({ app }: { app: MercuriiController }) {
   async function sign() {
     if (!step?.transaction || !step.receiptId || !app.wallet || signed) throw new Error("No unsigned reader update is ready");
     const result = await signPrepared(app.wallet, app.session!.address, step.transaction);
-    const original = { id: step.receiptId, bytes: result.signedTransactionBase64, status: "signed" };
+    const original: Signed = { id: step.receiptId, bytes: result.signedTransactionBase64, status: "signed" };
     setSigned(original);
-    const submitted = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const submitted = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${original.id}/submit`, { signedTransactionBase64: original.bytes });
-    setSigned({ ...original, status: submitted.receipt.status });
+    setSigned({ ...original, status: submitted.receipt.status,
+      signature: submitted.receipt.signature ?? null, chain: submitted.receipt.chain });
     setNotice(`Reader update ${submitted.receipt.status} · ${submitted.broadcast}.`);
   }
   async function reconcile() {
     if (!signed) throw new Error("Original reader signature is unavailable");
-    const result = await app.request<{ receipt: { status: string }; next: string }>(
+    const result = await app.request<ReceiptResponse & { next: string }>(
       `/v1/onboarding/receipts/${signed.id}/reconcile`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Reader update ${result.receipt.status} · ${result.next.replaceAll("_", " ")}.`);
   }
   async function retryOriginal() {
     if (!signed) throw new Error("Original reader signature is unavailable");
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${signed.id}/submit`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Same reader signature: ${result.receipt.status} · ${result.broadcast}.`);
   }
   return <section className={`${cardClass} p-5 sm:p-7`}><h2 className="text-lg font-semibold">Share a private payment with a Viewer</h2>
@@ -81,8 +88,9 @@ export function ViewerSharePanel({ app }: { app: MercuriiController }) {
         {viewers.map((grant) => <option key={grant.address} value={grant.address}>{shortAddress(grant.member)} · {shortAddress(grant.address)}</option>)}</select></label></div>
     <div className="mt-4 flex flex-wrap gap-2"><button className={buttonClass} disabled={busy || unresolved || !request || !grantAddress || Boolean(step && !signed)} onClick={() => void action(prepare)}>Prepare private share</button>
       {step?.transaction && <button className={secondaryButtonClass} disabled={busy || Boolean(signed)} onClick={() => void action(sign)}>Review & sign</button>}
-      {signed && <><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Reconcile</button>
+      {signed && <><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Check status</button>
         {signed.status !== "confirmed" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</>}</div>
+    {signed && <div className="mt-4"><ReceiptProof receipt={signed} label="Share update" /></div>}
     {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}{notice && <p role="status" className="mt-3 text-sm text-brand">{notice}</p>}
   </section>;
 }

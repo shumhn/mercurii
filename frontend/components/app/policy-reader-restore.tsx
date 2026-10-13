@@ -5,12 +5,17 @@ import { shortAddress } from "@/lib/mercurii-client";
 import { signPrepared, type PreparedTransaction } from "@/lib/mercurii-wallet";
 import type { MercuriiController } from "./use-mercurii";
 import { buttonClass, cardClass, secondaryButtonClass } from "./mercurii-app";
+import { ReceiptProof } from "./tx-proof";
 
 type Step = { status: "build" | "wait"; receiptId?: string; transaction?: PreparedTransaction };
+type Signed = { id: string; bytes: string; status: string;
+  signature?: string | null; chain?: "base" | "ephemeral" };
+type ReceiptResponse = { receipt: { status: string; signature?: string | null;
+  chain?: "base" | "ephemeral" } };
 
 export function PolicyReaderRestore({ app }: { app: MercuriiController }) {
   const [grant, setGrant] = useState(""); const [step, setStep] = useState<Step | null>(null);
-  const [signed, setSigned] = useState<{ id: string; bytes: string; status: string } | null>(null);
+  const [signed, setSigned] = useState<Signed | null>(null);
   const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [notice, setNotice] = useState("");
   const grants = app.members.value?.flatMap((entry) => entry.grants).filter((item) =>
     item.role === 1 && item.active && !item.revoked && item.member === app.policy.value?.finance) ?? [];
@@ -33,26 +38,29 @@ export function PolicyReaderRestore({ app }: { app: MercuriiController }) {
   async function sign() {
     if (!step?.transaction || !step.receiptId || !app.wallet || signed) throw new Error("No unsigned reader update is ready");
     const result = await signPrepared(app.wallet, app.session!.address, step.transaction);
-    const original = { id: step.receiptId, bytes: result.signedTransactionBase64, status: "signed" };
+    const original: Signed = { id: step.receiptId, bytes: result.signedTransactionBase64, status: "signed" };
     setSigned(original);
-    const submitted = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const submitted = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${original.id}/submit`, { signedTransactionBase64: original.bytes });
-    setSigned({ ...original, status: submitted.receipt.status });
+    setSigned({ ...original, status: submitted.receipt.status,
+      signature: submitted.receipt.signature ?? null, chain: submitted.receipt.chain });
     setNotice(`Reader update ${submitted.receipt.status} · ${submitted.broadcast}.`);
   }
   async function reconcile() {
     if (!signed) throw new Error("Original signed reader update is unavailable");
-    const result = await app.request<{ receipt: { status: string }; next: string }>(
+    const result = await app.request<ReceiptResponse & { next: string }>(
       `/v1/onboarding/receipts/${signed.id}/reconcile`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Reader update ${result.receipt.status} · ${result.next.replaceAll("_", " ")}.`);
     if (result.receipt.status === "confirmed") await app.refresh();
   }
   async function retryOriginal() {
     if (!signed) throw new Error("Original signature is unavailable");
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${signed.id}/submit`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Same reader signature: ${result.receipt.status} · ${result.broadcast}.`);
   }
   return <section className={`${cardClass} p-5 sm:p-7`}><h2 className="text-lg font-semibold">Finance reader recovery</h2>
@@ -61,8 +69,9 @@ export function PolicyReaderRestore({ app }: { app: MercuriiController }) {
       {grants.map((item) => <option key={item.address} value={item.address}>{shortAddress(item.member)} · {shortAddress(item.address)}</option>)}</select></label></div>
     <div className="mt-4 flex flex-wrap gap-2"><button className={buttonClass} disabled={busy || !grant || Boolean(step && !signed)} onClick={() => void action(prepare)}>Prepare reader restoration</button>
       {step?.transaction && <button className={secondaryButtonClass} disabled={busy || Boolean(signed)} onClick={() => void action(sign)}>Review & sign</button>}
-      {signed && <><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Reconcile</button>
+      {signed && <><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Check status</button>
         {signed.status !== "confirmed" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</>}</div>
+    {signed && <div className="mt-4"><ReceiptProof receipt={signed} label="Reader update" /></div>}
     {error && <p role="alert" className="mt-3 text-sm text-red-700">{error}</p>}{notice && <p role="status" className="mt-3 text-sm text-brand">{notice}</p>}
   </section>;
 }

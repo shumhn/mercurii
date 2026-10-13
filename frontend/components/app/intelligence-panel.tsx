@@ -7,6 +7,7 @@ import { signMessage, signPrepared, type PreparedTransaction } from "@/lib/mercu
 import { formatUsdc, parseUsdc, shortAddress } from "@/lib/mercurii-client";
 import type { MercuriiController } from "./use-mercurii";
 import { buttonClass, cardClass, DataState, PaymentItem, secondaryButtonClass } from "./mercurii-app";
+import { TxProof } from "./tx-proof";
 import { AgentPolicyPanel } from "./agent-policy-panel";
 import { ViewerSharePanel } from "./viewer-share-panel";
 import { AgentAuditPanel } from "./agent-audit-panel";
@@ -81,7 +82,7 @@ export function AgentPanel({ app }: { app: MercuriiController }) {
       {mode === "payment" && <div className="mt-5 space-y-2"><label className="block text-xs font-semibold">Private payment request address<input className="mt-1 min-h-10 w-full rounded-lg border border-app-line px-2 font-mono text-xs" value={requestAddress} onChange={(e) => setRequestAddress(e.target.value)} placeholder="Request PDA, not payment ID" /></label>
         {app.payments.value && app.payments.value.length > 0 && <select aria-label="Choose a visible payment" className="min-h-10 w-full rounded-lg border border-app-line bg-white px-2 text-xs" value="" onChange={(e) => setRequestAddress(e.target.value)}><option value="">Choose from visible payments</option>{app.payments.value.map((item) => <option key={item.record.paymentId} value={item.record.request}>{shortAddress(item.record.paymentId)} · {item.requestStatus}</option>)}</select>}</div>}
       {mode === "payroll" && <div className="mt-5 space-y-2"><label className="block text-xs font-semibold">Payroll run ID<input className="mt-1 min-h-10 w-full rounded-lg border border-app-line px-2 font-mono text-xs" value={payrollRunId} onChange={(e) => setPayrollRunId(e.target.value)} placeholder="Run ID" /></label>
-        {app.payrollRuns.value && app.payrollRuns.value.length > 0 && <select aria-label="Choose a visible payroll run" className="min-h-10 w-full rounded-lg border border-app-line bg-white px-2 text-xs" value="" onChange={(e) => setPayrollRunId(e.target.value)}><option value="">Choose from visible runs</option>{app.payrollRuns.value.map((item) => <option key={item.runId} value={item.runId}>{shortAddress(item.runId)} · {item.status}</option>)}</select>}</div>}
+        {app.payrollRuns.value && app.payrollRuns.value.length > 0 && <select aria-label="Choose a visible payroll run" className="min-h-10 w-full rounded-lg border border-app-line bg-white px-2 text-xs" value="" onChange={(e) => setPayrollRunId(e.target.value)}><option value="">Choose from visible runs</option>{app.payrollRuns.value.map((item) => <option key={item.runId} value={item.runId}>{shortAddress(item.runId)} · {item.itemCount ?? 0} payouts · {new Date(item.createdAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</option>)}</select>}</div>}
       {mode === "readiness" && <label className="mt-5 block text-xs font-semibold">Roster CSV · wallet,amount_usdc,name<textarea className="mt-1 min-h-28 w-full rounded-lg border border-app-line p-3 font-mono text-xs" value={rosterCsv} onChange={(e) => setRosterCsv(e.target.value)} spellCheck={false} /></label>}
       {mode === "draft" && <div className="mt-5 grid gap-3 rounded-xl border border-app-line p-4 sm:grid-cols-2"><label className="text-xs font-semibold">Registered payee<select className="mt-1 min-h-10 w-full rounded-lg border border-app-line px-2 text-sm" value={payeeId} onChange={(e) => setPayeeId(e.target.value)}><option value="">Select payee</option>{app.payees.value?.filter((item) => item.active).map((item) => <option key={item.payeeId} value={item.payeeId}>{item.kind} · {shortAddress(item.payeeId)}</option>)}</select></label>
         <label className="text-xs font-semibold">Recipient wallet<input className="mt-1 min-h-10 w-full rounded-lg border border-app-line px-2 font-mono text-xs" value={recipient} onChange={(e) => setRecipient(e.target.value)} placeholder="Registered wallet" /></label>
@@ -134,7 +135,7 @@ export function RecordsPanel({ app }: { app: MercuriiController }) {
   }
   return <div className={`grid gap-5 ${founder ? "xl:grid-cols-[1.25fr_.75fr]" : ""}`}>
     <section className={`${cardClass} p-5 sm:p-7`}><h2 className="text-xl font-semibold">Payment records</h2><p className="mt-1 text-sm text-app-muted">Private request status and settlement evidence visible to this role.</p>
-      {companyLedger ? <div className="mt-6"><DataState resource={app.payments} empty="No payment records yet." retry={app.refresh}>{(payments) => <div className="divide-y divide-app-line">{payments.map((row) => <button key={row.record.paymentId} className="block w-full text-left focus-visible:outline-2 focus-visible:outline-brand" onClick={() => setSelectedPayment(row.record.paymentId)}><PaymentItem row={row} /><div className="pb-3 text-xs text-app-muted">Chain: {row.chainStatus ?? "awaiting observation"}{row.record.signature ? ` · Signature ${shortAddress(row.record.signature)}` : ""}{row.snapshotNeedsSync ? " · Treasury snapshot needs sync" : ""}</div></button>)}</div>}</DataState>
+      {companyLedger ? <div className="mt-6"><DataState resource={app.payments} empty="No payment records yet." retry={app.refresh}>{(payments) => <div className="divide-y divide-app-line">{payments.map((row) => <button key={row.record.paymentId} className="block w-full text-left focus-visible:outline-2 focus-visible:outline-brand" onClick={() => setSelectedPayment(row.record.paymentId)}><PaymentItem row={row} /><div className="pb-3 text-xs text-app-muted">Chain: {row.chainStatus ?? "awaiting observation"}{row.record.signature ? " · verified on Solana" : ""}{row.snapshotNeedsSync ? " · Treasury snapshot needs sync" : ""}</div></button>)}</div>}</DataState>
         {selectedPayment && <PaymentSettlement app={app} paymentId={selectedPayment} onClose={() => setSelectedPayment(null)} />}</div> : <div className="mt-6">
         <p className="text-sm leading-6 text-app-muted">Open the ID of a request explicitly shared with your wallet. Your role has no company-wide payment index.</p>
         <div className="mt-4 flex flex-wrap gap-2"><label className="sr-only" htmlFor="shared-payment-id">Private payment ID</label><input id="shared-payment-id" className="min-h-11 min-w-0 flex-1 rounded-xl border border-app-line px-3 font-mono text-xs" value={sharedId} onChange={(event) => setSharedId(event.target.value)} placeholder="Private payment UUID" />
@@ -175,7 +176,8 @@ function PaymentSettlement({ app, paymentId, onClose }: {
   const founder = app.session?.role === "founder";
   const [detail, setDetail] = useState<SettlementStatus | null>(null);
   const [step, setStep] = useState<SnapshotStep | null>(null);
-  const [signed, setSigned] = useState<{ receiptId: string; bytes: string } | null>(null);
+  const [signed, setSigned] = useState<{ receiptId: string; bytes: string; status?: string;
+    signature?: string | null; chain?: "base" | "ephemeral" } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
@@ -202,20 +204,25 @@ function PaymentSettlement({ app, paymentId, onClose }: {
   async function signSync() {
     if (!step?.transaction || !step.receiptId || !app.wallet) throw new Error("No snapshot sync transaction is ready");
     const transaction = await signPrepared(app.wallet, app.session!.address, step.transaction);
-    setSigned({ receiptId: step.receiptId, bytes: transaction.signedTransactionBase64 });
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const result = await app.request<{ receipt: { status: string; signature?: string | null;
+      chain?: "base" | "ephemeral" }; broadcast: string }>(
       `/v1/onboarding/receipts/${step.receiptId}/submit`,
       { signedTransactionBase64: transaction.signedTransactionBase64 });
-    setNotice(`Snapshot receipt ${result.receipt.status} · broadcast ${result.broadcast}. Reconcile before rebuilding.`);
+    setSigned({ receiptId: step.receiptId, bytes: transaction.signedTransactionBase64,
+      status: result.receipt.status, signature: result.receipt.signature ?? null, chain: result.receipt.chain });
+    setNotice(`Snapshot receipt ${result.receipt.status} · broadcast ${result.broadcast}. Check its status before rebuilding.`);
     await inspect();
     await app.refresh();
   }
   async function reconcileSync() {
     const receiptId = signed?.receiptId ?? step?.receiptId;
     if (!receiptId) throw new Error("No snapshot receipt to reconcile");
-    const result = await app.request<{ receipt: { status: string }; next: string }>(
+    const result = await app.request<{ receipt: { status: string; signature?: string | null;
+      chain?: "base" | "ephemeral" }; next: string }>(
       `/v1/onboarding/receipts/${receiptId}/reconcile`,
       signed ? { signedTransactionBase64: signed.bytes } : {});
+    if (signed) setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Snapshot receipt ${result.receipt.status} · ${result.next.replaceAll("_", " ")}`);
     if (result.receipt.status === "confirmed") { setStep(null); setSigned(null); }
     await inspect();
@@ -237,22 +244,23 @@ function PaymentSettlement({ app, paymentId, onClose }: {
       {[
         ["Private request", detail.requestStatus.replaceAll("_", " ")],
         ["Payment job", detail.record.state.replaceAll("_", " ")],
-        ["Execution signature", detail.record.signature ?? "None"],
         ["Chain observation", detail.chainStatus ?? "Unavailable"],
         ["Treasury snapshot", detail.snapshotNeedsSync === true ? "Needs sync" :
           detail.snapshotNeedsSync === false ? "Current" : "Cannot determine yet"],
       ].map(([label, value]) => <div key={label} className="min-w-0 rounded-lg bg-white p-3">
         <dt className="text-xs text-app-muted">{label}</dt><dd className="mt-1 break-all font-medium">{value}</dd>
       </div>)}</dl>}
+    {detail?.record.signature && <div className="mt-3"><TxProof signature={detail.record.signature} label="Execution signature" status={detail.chainStatus} /></div>}
     {detail?.integrityWarning && <p role="alert" className="mt-3 rounded-lg bg-red-50 p-3 text-sm text-red-800">{detail.integrityWarning}</p>}
     {founder && detail?.snapshotNeedsSync && detail.requestStatus === "executed" &&
       <button className={`${buttonClass} mt-4`} disabled={busy || Boolean(signed)} onClick={() => void run(syncSnapshot)}>Prepare snapshot sync</button>}
     {step && <div className="mt-4 rounded-lg bg-white p-3 text-sm">
       <p className="font-semibold">Snapshot: {step.status.replaceAll("_", " ")}</p>
       {step.transaction && <p className="mt-1 text-app-muted">Signer: Founder · Network: Private Ephemeral Rollup</p>}
+      {signed?.signature && <div className="mt-3"><TxProof signature={signed.signature} label="Snapshot sync" chain={signed.chain ?? "base"} status={signed.status} /></div>}
       <div className="mt-3 flex flex-wrap gap-2">
         {step.transaction && <button className={buttonClass} disabled={busy || Boolean(signed)} onClick={() => void run(signSync)}>{signed ? "Snapshot signed" : "Review & sign"}</button>}
-        {step.receiptId && <button className={secondaryButtonClass} disabled={busy} onClick={() => void run(reconcileSync)}>Reconcile receipt</button>}
+        {step.receiptId && <button className={secondaryButtonClass} disabled={busy} onClick={() => void run(reconcileSync)}>Check status</button>}
         {signed && <button className={secondaryButtonClass} disabled={busy} onClick={() => void run(retryOriginalSync)}>Retry same signature</button>}
       </div>
     </div>}

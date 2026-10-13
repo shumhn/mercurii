@@ -6,13 +6,17 @@ import { formatUsdc, parseUsdc, shortAddress } from "@/lib/mercurii-client";
 import { signPrepared, type PreparedTransaction } from "@/lib/mercurii-wallet";
 import type { MercuriiController } from "./use-mercurii";
 import { buttonClass, cardClass, inputClass, secondaryButtonClass } from "./mercurii-app";
+import { ReceiptProof } from "./tx-proof";
 
 type Policy = { address: string; agent: string; allowedRecipient: string; perPaymentCapMicro: string;
   periodCapMicro: string; spentMicro: string; revoked: boolean };
 type Setup = { agentPolicyAddress: string; next: { status: "build" | "wait" | "ready" | "revoked";
   operation: string | null; reason: string }; transaction?: PreparedTransaction; receiptId?: string };
 type Revoke = { status: "build" | "wait" | "ready"; receiptId?: string; transaction?: PreparedTransaction };
-type Signed = { id: string; bytes: string; status: string };
+type Signed = { id: string; bytes: string; status: string;
+  signature?: string | null; chain?: "base" | "ephemeral" };
+type ReceiptResponse = { receipt: { status: string; signature?: string | null;
+  chain?: "base" | "ephemeral" } };
 
 export function AgentPolicyPanel({ app }: { app: MercuriiController }) {
   const founder = app.session?.role === "founder";
@@ -80,24 +84,27 @@ export function AgentPolicyPanel({ app }: { app: MercuriiController }) {
     const result = await signPrepared(app.wallet, app.session!.address, transaction);
     const original = { id, bytes: result.signedTransactionBase64, status: "signed" };
     setSigned(original);
-    const submitted = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const submitted = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${id}/submit`, { signedTransactionBase64: original.bytes });
-    setSigned({ ...original, status: submitted.receipt.status });
+    setSigned({ ...original, status: submitted.receipt.status,
+      signature: submitted.receipt.signature ?? null, chain: submitted.receipt.chain });
     setNotice(`Policy receipt ${submitted.receipt.status} · ${submitted.broadcast}.`);
   }
   async function reconcile() {
     if (!signed) throw new Error("No original signed policy receipt is available");
-    const result = await app.request<{ receipt: { status: string }; next: string }>(
+    const result = await app.request<ReceiptResponse & { next: string }>(
       `/v1/onboarding/receipts/${signed.id}/reconcile`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Policy receipt ${result.receipt.status} · ${result.next.replaceAll("_", " ")}.`);
     if (result.receipt.status === "confirmed" && revoke) await loadPolicy(address);
   }
   async function retryOriginal() {
     if (!signed) throw new Error("No original signature is available");
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${signed.id}/submit`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Same policy signature: ${result.receipt.status} · ${result.broadcast}.`);
   }
 
@@ -125,8 +132,8 @@ export function AgentPolicyPanel({ app }: { app: MercuriiController }) {
     {policy && <AgentMoneyPanel key={policy.address} app={app} policy={policy} onRefresh={() => loadPolicy(policy.address)} />}
     {revoke?.transaction && revoke.receiptId && <div className="mt-4 rounded-xl border border-red-200 bg-red-50 p-4 text-sm"><p className="font-semibold text-red-900">Revoke agent access</p>
       <button className={`${buttonClass} mt-3`} disabled={busy || Boolean(signed)} onClick={() => void action(() => sign(revoke.transaction!, revoke.receiptId!))}>Review & sign revocation</button></div>}
-    {signed && <div className="mt-4 flex flex-wrap items-center gap-2 text-xs"><span>Receipt {shortAddress(signed.id)} · {signed.status}</span><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Reconcile</button>
-      {signed.status !== "confirmed" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</div>}
+    {signed && <div className="mt-4"><ReceiptProof receipt={signed} label="Policy step" /><div className="mt-3 flex flex-wrap items-center gap-2 text-xs"><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Check status</button>
+      {signed.status !== "confirmed" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</div></div>}
     {error && <p role="alert" className="mt-4 rounded-xl bg-red-50 p-4 text-sm text-red-800">{error}</p>}
     {notice && <p role="status" className="mt-4 rounded-xl bg-brand/5 p-4 text-sm text-brand">{notice}</p>}
   </section>;
@@ -173,24 +180,27 @@ function AgentMoneyPanel({ app, policy, onRefresh }: { app: MercuriiController; 
     const result = await signPrepared(app.wallet, app.session!.address, step.transaction);
     const original = { id: step.receiptId, bytes: result.signedTransactionBase64, status: "signed" };
     setSigned(original);
-    const submitted = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    const submitted = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${original.id}/submit`, { signedTransactionBase64: original.bytes });
-    setSigned({ ...original, status: submitted.receipt.status });
+    setSigned({ ...original, status: submitted.receipt.status,
+      signature: submitted.receipt.signature ?? null, chain: submitted.receipt.chain });
     setNotice(`Agent transfer ${submitted.receipt.status} · ${submitted.broadcast}.`);
   }
   async function reconcile() {
     if (!signed) throw new Error("Original agent transfer signature is unavailable");
-    const result = await app.request<{ receipt: { status: string }; next: string }>(
+    const result = await app.request<ReceiptResponse & { next: string }>(
       `/v1/onboarding/receipts/${signed.id}/reconcile`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Agent transfer ${result.receipt.status} · ${result.next.replaceAll("_", " ")}.`);
     if (result.receipt.status === "confirmed") await onRefresh();
   }
   async function retryOriginal() {
-    if (!signed) throw new Error("Original signature is unavailable");
-    const result = await app.request<{ receipt: { status: string }; broadcast: string }>(
+    if (!signed) throw new Error("No original signature is available");
+    const result = await app.request<ReceiptResponse & { broadcast: string }>(
       `/v1/onboarding/receipts/${signed.id}/submit`, { signedTransactionBase64: signed.bytes });
-    setSigned({ ...signed, status: result.receipt.status });
+    setSigned({ ...signed, status: result.receipt.status,
+      signature: result.receipt.signature ?? signed.signature, chain: result.receipt.chain ?? signed.chain });
     setNotice(`Same agent signature: ${result.receipt.status} · ${result.broadcast}.`);
   }
   if ((!founder && !agent) || (policy.revoked && !founder)) return null;
@@ -202,8 +212,9 @@ function AgentMoneyPanel({ app, policy, onRefresh }: { app: MercuriiController; 
         <label className="text-xs font-semibold">Amount (USDC)<input className={`${inputClass} mt-1`} value={amount} disabled={unresolved || Boolean(step && step.status !== "ready" && signed?.status !== "failed" && signed?.status !== "confirmed")} onChange={(e) => setAmount(e.target.value)} inputMode="decimal" /></label></div>
       <div className="mt-3 flex flex-wrap gap-2"><button className={buttonClass} disabled={busy || unresolved || Boolean(step && step.status !== "ready" && signed?.status !== "failed" && signed?.status !== "confirmed")} onClick={() => void action(prepare)}>Prepare {kind}</button>
         {step?.transaction && step.receiptId && <button className={secondaryButtonClass} disabled={busy || Boolean(signed)} onClick={() => void action(sign)}>Review & sign</button>}
-        {signed && <><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Reconcile</button>
+        {signed && <><button className={secondaryButtonClass} disabled={busy} onClick={() => void action(reconcile)}>Check status</button>
           {signed.status !== "confirmed" && <button className={secondaryButtonClass} disabled={busy} onClick={() => void action(retryOriginal)}>Retry same signature</button>}</>}</div>
+      {signed && <div className="mt-3 max-w-xl"><ReceiptProof receipt={signed} label="Agent transfer" /></div>}
       {actionId && <p className="mt-2 font-mono text-xs text-app-muted">Action {shortAddress(actionId)} · {step?.status ?? "preparing"} {signed ? `· receipt ${signed.status}` : ""}</p>}
     </>}
     {error && <p role="alert" className="mt-3 text-red-700">{error}</p>}

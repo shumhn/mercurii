@@ -16,8 +16,22 @@ export type Capabilities = { privateReceive: boolean; paymentExecution: boolean;
 const unavailableCapabilities: Capabilities = { privateReceive: false, paymentExecution: false,
   financeAgent: false, x402: false, recipientWithdraw: false };
 
+const COMPANY_STORAGE_KEY = "mercurii.company";
+
+function readStoredCompany(): string {
+  if (typeof window === "undefined") return "";
+  try { return window.localStorage.getItem(COMPANY_STORAGE_KEY) ?? ""; } catch { return ""; }
+}
+
 export function useMercurii(onClearPrivateDraft?: () => void) {
-  const [company, setCompany] = useState("");
+  const [company, setCompanyState] = useState(readStoredCompany);
+  const setCompany = useCallback((value: string) => {
+    setCompanyState(value);
+    try {
+      if (value.trim()) window.localStorage.setItem(COMPANY_STORAGE_KEY, value.trim());
+      else window.localStorage.removeItem(COMPANY_STORAGE_KEY);
+    } catch { /* Storage unavailable; session-only company. */ }
+  }, []);
   const [session, setSession] = useState<Session | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [connectionError, setConnectionError] = useState<string | null>(null);
@@ -55,8 +69,8 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
 
   useEffect(() => {
     let active = true;
-    api<{ ok: boolean; companyAddress: string | null; programId: string; capabilities?: Capabilities }>("/health")
-      .then((health) => { if (active) { setBackendStatus("online"); setProgramId(health.programId); setCapabilities(health.capabilities ?? unavailableCapabilities); const defaultCompany = health.companyAddress; if (defaultCompany) setCompany((prior) => prior || defaultCompany); } })
+    api<{ ok: boolean; programId: string; capabilities?: Capabilities }>("/health")
+      .then((health) => { if (active) { setBackendStatus("online"); setProgramId(health.programId); setCapabilities(health.capabilities ?? unavailableCapabilities); } })
       .catch(() => { if (active) setBackendStatus("offline"); });
     return () => { active = false; };
   }, []);
@@ -143,14 +157,19 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
       tasks.push(load(setAudits, audits,
         api<{ audits: Record<string, unknown>[] }>("/v1/compliance/audits", credentials).then((value) => value.audits), generation));
     }
-    tasks.push(load(setMembers, members,
-      api<{ members: TeamMember[] }>("/v1/team-members", credentials).then((value) => value.members), generation));
+    if (current.role !== "member") {
+      tasks.push(load(setMembers, members,
+        api<{ members: TeamMember[] }>("/v1/team-members", credentials).then((value) => value.members), generation));
+    } else {
+      setMembers({ state: "ready", value: [], error: null });
+    }
     await Promise.allSettled(tasks);
   }, [audits, clearSession, load, members, payees, payments, payrollRuns, payrollSchedules, policy, recipientBalance, snapshot]);
 
-  const connect = useCallback(async (wallet: BrowserWallet) => {
+  const connect = useCallback(async (wallet: BrowserWallet, companyOverride?: string) => {
     setConnectionError(null);
-    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(company.trim())) {
+    const companyAddress = (companyOverride ?? company).trim();
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(companyAddress)) {
       setConnectionError("Enter the company policy address before connecting"); return;
     }
     const generation = ++generationRef.current;
@@ -158,7 +177,8 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
     setConnecting(true);
     try {
       const address = (await wallet.connect()).publicKey.toBase58();
-      const credentials = { company: company.trim() };
+      if (companyAddress !== company.trim()) setCompany(companyAddress);
+      const credentials = { company: companyAddress };
       const challenge = await api<{ challenge: string }>("/v1/auth/tee-login/challenge",
         { ...credentials, body: { wallet: address } });
       const signature = await signMessage(wallet, challenge.challenge);
@@ -198,7 +218,7 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
     } catch (cause) {
       if (generationRef.current === generation) setConnectionError(cause instanceof Error ? cause.message : "Wallet login failed");
     } finally { setConnecting(false); }
-  }, [clearPrivateData, company, refresh]);
+  }, [clearPrivateData, company, refresh, setCompany]);
 
   const disconnect = useCallback(async () => {
     const previous = walletRef.current;

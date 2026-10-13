@@ -184,9 +184,12 @@ export async function signPrepared(wallet: BrowserWallet, address: string, prepa
   const bytes = transactionBytes(prepared.transactionBase64);
   let transaction: Transaction | VersionedTransaction;
   try {
-    transaction = VersionedTransaction.deserialize(bytes);
-  } catch {
+    // Legacy transactions also deserialize as `VersionedTransaction` with a
+    // legacy message. Keep them as legacy Transactions: several wallet
+    // adapters preserve the Founder signature only on that signing path.
     transaction = Transaction.from(Buffer.from(bytes));
+  } catch {
+    transaction = VersionedTransaction.deserialize(bytes);
   }
   const signed = await wallet.signTransaction(transaction);
   const serialized = Uint8Array.from(signed.serialize());

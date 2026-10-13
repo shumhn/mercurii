@@ -44,7 +44,7 @@ const backendArgs = [
   "--experimental-strip-types", "src/server.ts",
 ];
 start("Mercurii API", backendArgs, backend);
-const webPort = process.env.MERCURII_WEB_PORT ?? "3999";
+const webPort = process.env.MERCURII_WEB_PORT ?? "3000";
 start("Next.js", [join(frontend, "node_modules/next/dist/bin/next"),
   "dev", "--webpack", "-p", webPort], frontend);
 
