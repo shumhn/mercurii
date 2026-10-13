@@ -21,7 +21,7 @@ export function TreasuryTerminal() {
       category: "payroll",
       recipient: "eng-lead.sol (Encrypted ATA)",
       amount: "8,500.00",
-      slot: "509,146,140",
+      slot: "472,853,742",
       status: "Settled (Circle USDC)",
       hash: "49KrESZzxMigzPxJBRvEDAZCtpeBMAHiViEnBBoGjRsa2Hd2VxgWKxm2M7ZUPJK9YtUhqK9L93S2gZ4N2bUFQ55v",
       statusColor: "emerald",
@@ -32,7 +32,7 @@ export function TreasuryTerminal() {
       category: "payroll",
       recipient: "design-core.sol (Encrypted ATA)",
       amount: "6,200.00",
-      slot: "509,146,140",
+      slot: "472,853,912",
       status: "Settled (Circle USDC)",
       hash: "ZaNscdVKCpRR13c9xMnexsQ1cDeq9QDy3JqEYjENkGNPw3kspYzzm6yLhZVUvi666di4iHoKen4up9wHjFDjggf",
       statusColor: "emerald",
@@ -43,7 +43,7 @@ export function TreasuryTerminal() {
       category: "vendors",
       recipient: "Acme Cloud Vendor ATA",
       amount: "14,250.00",
-      slot: "509,145,980",
+      slot: "472,854,084",
       status: "Finance Grant Executed",
       hash: "2HoBWNrQBziB5Mpp7DDMNna8KaL8rZrW8pjc64btnuthZRKd5oYZqPfKTXmmDkHs9uEAPJdEy2jYwdv9hBtYBF67",
       statusColor: "cyan",
@@ -54,7 +54,7 @@ export function TreasuryTerminal() {
       category: "agent",
       recipient: "Anthropic / API Provider",
       amount: "24.50",
-      slot: "509,145,110",
+      slot: "468,306,306",
       status: "Bounded Float Spend",
       hash: "36iv6JU7B2a2YSxVKpn9Z6bh4B7N7nHWmw7fPV1dBikTcc6MYTgYV21mn71C16bZD3Ebfq9UPhQqW7QjbLdXJvWz",
       statusColor: "purple",
@@ -65,7 +65,7 @@ export function TreasuryTerminal() {
       category: "payroll",
       recipient: "audit-sec.sol (Encrypted ATA)",
       amount: "12,000.00",
-      slot: "509,144,820",
+      slot: "476,577,461",
       status: "Settled (Circle USDC)",
       hash: "56EJD3KHVV36bGZ4MAZDhiMjiJ9wL13HcH4ws78j5avg7HN4DweChg2tUsCUfbaPMjJMU6ybjx3WhnDWxiNTTP7A",
       statusColor: "emerald",
@@ -185,7 +185,7 @@ export function TreasuryTerminal() {
                 <th className="py-4 px-6">Confidential Recipient</th>
                 <th className="py-4 px-6 text-right">Amount (USDC)</th>
                 <th className="py-4 px-6">Execution Status</th>
-                <th className="py-4 px-6 text-right">Devnet Proof</th>
+                <th className="py-4 px-6 text-right">MagicBlock PER Proof</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.05] text-xs">
@@ -240,12 +240,14 @@ export function TreasuryTerminal() {
                   {/* Column 5: Proof Link */}
                   <td className="py-4 px-6 text-right">
                     <a
-                      href={`https://explorer.solana.com/tx/${item.hash}?cluster=devnet`}
+                      href={`https://explorer.solana.com/tx/${item.hash}?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app`}
                       target="_blank"
                       rel="noopener noreferrer"
+                      title={`Finalized at MagicBlock slot ${item.slot}`}
                       className="inline-flex items-center gap-1 font-mono text-xs text-zinc-400 hover:text-white transition-colors"
                     >
                       <span>{item.hash.slice(0, 6)}...{item.hash.slice(-4)}</span>
+                      <span className="text-zinc-600">· slot {item.slot}</span>
                       <ExternalLink className="w-3 h-3 text-zinc-500" />
                     </a>
                   </td>

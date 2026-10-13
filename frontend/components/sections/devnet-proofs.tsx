@@ -30,16 +30,16 @@ export function DevnetProofs() {
     },
     {
       title: "Batch Payroll Approval Proof",
-      label: "PER Transaction",
+      label: "PER Transaction · finalized at MagicBlock slot 476577461",
       value: "56EJD3KHVV36bGZ4MAZDhiMjiJ9wL13HcH4ws78j5avg7HN4DweChg2tUsCUfbaPMjJMU6ybjx3WhnDWxiNTTP7A",
-      link: "https://explorer.solana.com/tx/56EJD3KHVV36bGZ4MAZDhiMjiJ9wL13HcH4ws78j5avg7HN4DweChg2tUsCUfbaPMjJMU6ybjx3WhnDWxiNTTP7A?cluster=devnet",
+      link: "https://explorer.solana.com/tx/56EJD3KHVV36bGZ4MAZDhiMjiJ9wL13HcH4ws78j5avg7HN4DweChg2tUsCUfbaPMjJMU6ybjx3WhnDWxiNTTP7A?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app",
       status: "9/9 Items Settled",
     },
     {
       title: "Autonomous Agent Spend Proof",
-      label: "PER Float Spend",
+      label: "PER Float Spend · finalized at MagicBlock slot 468306306",
       value: "36iv6JU7B2a2YSxVKpn9Z6bh4B7N7nHWmw7fPV1dBikTcc6MYTgYV21mn71C16bZD3Ebfq9UPhQqW7QjbLdXJvWz",
-      link: "https://explorer.solana.com/tx/36iv6JU7B2a2YSxVKpn9Z6bh4B7N7nHWmw7fPV1dBikTcc6MYTgYV21mn71C16bZD3Ebfq9UPhQqW7QjbLdXJvWz?cluster=devnet",
+      link: "https://explorer.solana.com/tx/36iv6JU7B2a2YSxVKpn9Z6bh4B7N7nHWmw7fPV1dBikTcc6MYTgYV21mn71C16bZD3Ebfq9UPhQqW7QjbLdXJvWz?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app",
       status: "1,000 Micro USDC Bounded",
     },
   ];

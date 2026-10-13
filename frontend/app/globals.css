@@ -21,26 +21,12 @@
   --color-app-muted: var(--app-muted);
   --font-sans: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
   --font-display: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, Consolas, monospace;
 }
 
-/* Force Switzer globally across all elements */
-html,
-body,
-h1,
-h2,
-h3,
-h4,
-h5,
-h6,
-p,
-span,
-a,
-button,
-input,
-select,
-textarea {
-  font-family: var(--font-switzer), 'Switzer', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif !important;
-}
+/* Switzer is applied once on <body> via next/font in layout.tsx and inherited.
+ * The old !important rule here also overrode every Tailwind font-mono utility,
+ * so addresses and signatures never rendered monospaced. */
 
 body {
   background-color: #F2F2F1;

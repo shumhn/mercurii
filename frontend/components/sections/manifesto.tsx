@@ -4,21 +4,26 @@ import React from "react";
 
 export function Manifesto() {
   return (
-    <section id="manifesto" className="py-28 sm:py-36 border-t border-b border-white/[0.08] relative bg-[#07070a]">
-      <div className="max-w-5xl mx-auto px-6 text-center">
-        <h2 className="text-2xl sm:text-4xl md:text-5xl font-medium tracking-tight text-zinc-100 leading-[1.35]">
-          We empower onchain organizations to operate with true corporate confidentiality. Salaries
-          stay private. Vendor payments stay protected. Autonomous AI agents operate within hardware
-          enclaves — accelerating the new financial internet where value moves freely, instantly,
-          and with absolute secrecy.
+    <section id="manifesto" className="relative bg-[#0038ff] text-white overflow-hidden">
+      <div className="max-w-7xl mx-auto px-6 py-24 sm:py-32">
+        {/* Top row: wordmark + eyebrow, mirroring the pitch-deck vision slide */}
+        <div className="flex items-center justify-between gap-4">
+          <span className="text-sm font-bold tracking-tight">mercurii</span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/60">
+            Private finance for internet businesses
+          </span>
+        </div>
+
+        <h2 className="mt-14 sm:mt-20 max-w-5xl text-4xl sm:text-6xl font-semibold tracking-tight leading-[1.05]">
+          Every onchain company deserves an operating account&mdash;not a public spreadsheet.
         </h2>
 
-        <div className="mt-12 flex items-center justify-center gap-3">
-          <span className="text-xs uppercase tracking-widest text-zinc-500 font-mono">
+        <div className="mt-14 sm:mt-20 border-t border-white/25 pt-6 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <span className="text-xs uppercase tracking-widest text-white/70 font-mono">
             Hardware-Enforced Privacy
           </span>
-          <span className="text-zinc-700">•</span>
-          <span className="text-xs uppercase tracking-widest text-emerald-400 font-mono">
+          <span className="text-white/40">&bull;</span>
+          <span className="text-xs uppercase tracking-widest text-white font-mono">
             MagicBlock Ephemeral Rollup
           </span>
         </div>

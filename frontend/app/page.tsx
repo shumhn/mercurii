@@ -2,6 +2,7 @@ import { Navbar } from "@/components/sections/navbar";
 import { Hero } from "@/components/sections/hero";
 import { SocialProof } from "@/components/sections/social-proof";
 import { FounderStory } from "@/components/sections/founder-story";
+import { Manifesto } from "@/components/sections/manifesto";
 import { BusinessAccount } from "@/components/sections/business-account";
 import { OperationalComparison } from "@/components/sections/operational-comparison";
 import { TeamControl } from "@/components/sections/team-control";
@@ -26,6 +27,9 @@ export default function Home() {
 
       {/* Founder problem story */}
       <FounderStory />
+
+      {/* Vision statement — the deck's bold closing line */}
+      <Manifesto />
 
       {/* The Foundation: Business Account & Multi-currency Flow */}
       <BusinessAccount />
