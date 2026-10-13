@@ -1,0 +1,5 @@
+# Standalone presentation exports are served/downloaded artifacts.  They are
+# not application source, so exclude them from GitHub's language breakdown.
+frontend/public/pitch.html linguist-generated=true
+docs/pitch/** linguist-generated=true
+research/** linguist-documentation=true
