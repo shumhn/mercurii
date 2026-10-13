@@ -64,7 +64,7 @@ import { applyConfirmedReaderCleanup as applyLocalConfirmedReaderCleanup, flowRe
   getPaymentFlow as getLocalPaymentFlow, inspectPaymentFlow,
   recordedRequestReaders as recordedLocalPaymentFlowReaders, validateRequesterGrantForFlow } from "./payment-flow.ts";
 import {
-  DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
+  DEVNET_USDC, asAddress, asMicroAmount, assertRecipientWithdrawalBalance, canonicalTokenAccount, delegationStatus, preparePrivateReceive,
   prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance, teeConnection,
 } from "./magicblock.ts";
 import {
@@ -73,18 +73,8 @@ import {
   readAgentPolicy, readCompanyPolicy, readPaymentRequest, readTeamGrant, readTreasurySnapshot,
 } from "./operations.ts";
 
-// Multi-company: the env pair is only the default company. Each request names
-// its company (x-mercury-company header, body.company, or ?company=) and the
-// registry resolves the founder it may act for. Module-level names stay for
-// the default context; request handlers use the shadowed per-request values.
-const defaultCompanyAddress = process.env.MERCURY_COMPANY_ADDRESS ?
-  asAddress(process.env.MERCURY_COMPANY_ADDRESS, "MERCURY_COMPANY_ADDRESS") : null;
-const defaultFounderAddress = process.env.MERCURY_FOUNDER_ADDRESS ?
-  asAddress(process.env.MERCURY_FOUNDER_ADDRESS, "MERCURY_FOUNDER_ADDRESS") : null;
-if (defaultCompanyAddress === null && defaultFounderAddress !== null ||
-    defaultCompanyAddress !== null && defaultFounderAddress === null) {
-  throw new Error("Set both MERCURY_COMPANY_ADDRESS and MERCURY_FOUNDER_ADDRESS, or neither");
-}
+// Every request names its company (x-mercury-company header, body.company, or
+// ?company=). The server never silently selects an env-configured company.
 const host = process.env.HOST ?? "127.0.0.1";
 const port = Number(process.env.PORT ?? "8787");
 const databasePayments = DatabasePaymentStore.fromEnvironment();
@@ -499,8 +489,7 @@ async function paymentChainObservation(signature: string, token: string): Promis
 createServer(async (req, res) => {
   try {
     if (req.method === "GET" && req.url === "/health") {
-      return reply(res, 200, { ok: true, companyAddress: defaultCompanyAddress,
-        multiCompany: true, programId: PROGRAM_ID.toBase58(), capabilities: {
+      return reply(res, 200, { ok: true, multiCompany: true, programId: PROGRAM_ID.toBase58(), capabilities: {
           privateReceive: process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE === "1",
           paymentExecution: process.env.MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS === "1",
           financeAgent: process.env.MERCURY_ENABLE_FINANCE_ASSISTANT === "1",
@@ -2121,7 +2110,8 @@ createServer(async (req, res) => {
       if (typeof body.withdrawalId !== "string" || !/^[a-zA-Z0-9_-]{1,48}$/.test(body.withdrawalId)) {
         throw new Error("withdrawalId must be 1 to 48 letters, digits, underscores, or hyphens");
       }
-      const amountMicro = asMicroAmount(body.amountMicro);
+      const privateBalance = await readRecipientBalance({ owner, mint: companyContext.mint, teeToken: token });
+      const amountMicro = assertRecipientWithdrawalBalance(body.amountMicro, privateBalance.balanceMicro);
       const target = `${owner}:${body.withdrawalId}`;
       const prior = latestOnboardingReceipt(companyAddress, target, "recipientWithdraw");
       if (prior) return reply(res, 200, { status: prior.status === "confirmed" ? "ready" : "wait_for_receipt",

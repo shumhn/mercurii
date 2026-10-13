@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { preparePrivateReceive, prepareRecipientOnboarding, prepareRecipientWithdrawal } from "../src/magicblock.ts";
+import { assertRecipientWithdrawalBalance, preparePrivateReceive, prepareRecipientOnboarding,
+  prepareRecipientWithdrawal } from "../src/magicblock.ts";
 import { agentPaymentAccounts, paymentExecutionAccounts, paymentStatusFromRequest } from "../src/operations.ts";
 
 test("private receive builder fixes the route and leaves payer signing to the client", async () => {
@@ -223,4 +224,13 @@ test("recipient withdrawal rejects a PDA and wrong validator", async () => {
       requiredSigners: [owner], validator: Keypair.generate().publicKey.toBase58(),
     }), { status: 200 }),
   }), /selected PER validator/);
+});
+
+test("recipient withdrawal cannot exceed the authenticated private balance", () => {
+  assert.equal(assertRecipientWithdrawalBalance(13_610, "13610"), 13_610);
+  assert.equal(assertRecipientWithdrawalBalance(1, "13610"), 1);
+  assert.throws(() => assertRecipientWithdrawalBalance(13_611, "13610"),
+    /exceeds the private recipient balance/);
+  assert.throws(() => assertRecipientWithdrawalBalance(1, "not-a-balance"),
+    /balance is invalid/);
 });

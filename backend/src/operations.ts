@@ -10,7 +10,9 @@ import { DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, teeConnec
 
 const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
 export const PROGRAM_ID = new PublicKey(idl.address);
-export const BASE_RPC = "https://rpc.magicblock.app/devnet";
+// Base-layer reads go through MERCURY_BASE_RPC when set (e.g. a Helius devnet
+// endpoint), falling back to the MagicBlock devnet router.
+export const BASE_RPC = process.env.MERCURY_BASE_RPC ?? "https://rpc.magicblock.app/devnet";
 export const TEE_RPC = "https://devnet-tee.magicblock.app";
 export const TEE_VALIDATOR = new PublicKey("MTEWGuqxUpYZGFJQcp8tLN7x5v9BSeoFHYWQQ3n3xzo");
 

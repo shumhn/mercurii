@@ -1,4 +1,4 @@
-import { PublicKey, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, PublicKey, Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { asAddress } from "./magicblock.ts";
 import { PROGRAM_ID } from "./operations.ts";
@@ -12,7 +12,9 @@ export function founderCompanyAddress(founderInput: unknown): string {
 
 /** The submit route rebuilds the expected public instruction. The recent
  * blockhash can change between preparation and submission, but the instruction,
- * accounts, fee payer, and Founder signature must still be exact. */
+ * accounts, fee payer, and Founder signature must still be exact. Wallets may
+ * inject ComputeBudget priority-fee instructions while signing; those are
+ * ignored, but exactly one real instruction must remain and match the template. */
 export function validateSignedCompanyBootstrap(input: {
   expectedTransactionBase64: string;
   signedTransactionBase64: string;
@@ -22,12 +24,14 @@ export function validateSignedCompanyBootstrap(input: {
   const bytes = Buffer.from(input.signedTransactionBase64, "base64");
   const signed = Transaction.from(bytes);
   const founder = asAddress(input.founder, "founder");
-  if (expected.instructions.length !== 1 || signed.instructions.length !== 1 ||
+  const computeBudget = ComputeBudgetProgram.programId;
+  const meaningful = signed.instructions.filter((instruction) => !instruction.programId.equals(computeBudget));
+  if (expected.instructions.length !== 1 || meaningful.length !== 1 ||
       signed.feePayer?.toBase58() !== founder || signed.signatures.length !== 1 ||
       signed.signatures[0]?.publicKey.toBase58() !== founder || !signed.verifySignatures()) {
     throw new Error("Founder signature or bootstrap transaction shape is invalid");
   }
-  const actual = signed.instructions[0]!;
+  const actual = meaningful[0]!;
   const template = expected.instructions[0]!;
   if (!actual.programId.equals(template.programId) || !actual.data.equals(template.data) ||
       actual.keys.length !== template.keys.length ||

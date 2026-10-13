@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Keypair, SystemProgram, Transaction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import { confirmOnboardingReceipt, confirmedOnboardingStep, expireUnsignedOnboardingReceipt, getOnboardingReceipt, listOnboardingReceipts,
   reconcileOnboardingReceipt, recordOnboardingBuild,
   waitForCleanupReceipt, hasConfirmedRecipientDeposit, validateSignedOnboardingReceipt } from "../src/onboarding-journal.ts";
@@ -136,6 +136,54 @@ test("onboarding journal binds an unsigned build to its exact signed message", a
       abandonedTx.serialize().toString("base64"), "", async () => null), /expired/);
     assert.equal((await expireUnsignedOnboardingReceipt(pendingBuild.id, pendingBuild.company, "token",
       async () => { throw new Error("Signed receipts must not be expired"); })).status, "confirmed");
+  } finally {
+    if (previous === undefined) delete process.env.MERCURY_ONBOARDING_JOURNAL;
+    else process.env.MERCURY_ONBOARDING_JOURNAL = previous;
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("onboarding receipt tolerates wallet-injected ComputeBudget instructions", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "mercury-onboarding-cb-"));
+  const previous = process.env.MERCURY_ONBOARDING_JOURNAL;
+  process.env.MERCURY_ONBOARDING_JOURNAL = join(directory, "receipts.json");
+  try {
+    const founder = Keypair.generate();
+    const recipient = Keypair.generate().publicKey;
+    const tx = new Transaction().add(SystemProgram.transfer({
+      fromPubkey: founder.publicKey, toPubkey: recipient, lamports: 1,
+    }));
+    tx.feePayer = founder.publicKey;
+    tx.recentBlockhash = Keypair.generate().publicKey.toBase58();
+    const unsigned = tx.serialize({ requireAllSignatures: false, verifySignatures: false }).toString("base64");
+    const receipt = recordOnboardingBuild({
+      company: founder.publicKey.toBase58(), target: recipient.toBase58(),
+      operation: "delegateCompany", chain: "base", transactionBase64: unsigned,
+    });
+    // Simulate a wallet injecting priority-fee instructions before signing.
+    const walletVersion = Transaction.from(Buffer.from(unsigned, "base64"));
+    walletVersion.instructions.unshift(
+      ComputeBudgetProgram.setComputeUnitLimit({ units: 50_000 }),
+      ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }),
+    );
+    walletVersion.sign(founder);
+    const signedBase64 = walletVersion.serialize().toString("base64");
+    const validated = validateSignedOnboardingReceipt(receipt.id, receipt.company, signedBase64);
+    assert.equal(validated.receipt.operation, "delegateCompany");
+    const confirmed = await confirmOnboardingReceipt(receipt.id, signedBase64, "token",
+      async () => ({ err: null, confirmationStatus: "confirmed" }));
+    assert.equal(confirmed.status, "confirmed");
+
+    // Different meaningful content still fails even with budget instructions present.
+    const changed = new Transaction().add(SystemProgram.transfer({
+      fromPubkey: founder.publicKey, toPubkey: recipient, lamports: 2,
+    }));
+    changed.feePayer = founder.publicKey;
+    changed.recentBlockhash = tx.recentBlockhash;
+    changed.instructions.unshift(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 5 }));
+    changed.sign(founder);
+    await assert.rejects(() => confirmOnboardingReceipt(receipt.id,
+      changed.serialize().toString("base64"), ""), /does not match/);
   } finally {
     if (previous === undefined) delete process.env.MERCURY_ONBOARDING_JOURNAL;
     else process.env.MERCURY_ONBOARDING_JOURNAL = previous;

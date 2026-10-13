@@ -13,7 +13,7 @@ const founderB = Keypair.generate().publicKey.toBase58();
 const companyC = Keypair.generate().publicKey.toBase58();
 
 function withEnv(env: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
-  const names = ["MERCURY_COMPANY_ADDRESS", "MERCURY_FOUNDER_ADDRESS", "MERCURY_COMPANY_MINT",
+  const names = ["MERCURY_ENABLE_DEFAULT_COMPANY", "MERCURY_COMPANY_ADDRESS", "MERCURY_FOUNDER_ADDRESS", "MERCURY_COMPANY_MINT",
     "MERCURY_COMPANY_REGISTRY_JSON", "MERCURY_SUPABASE_URL", "MERCURY_SUPABASE_SECRET_KEY",
     "NEXT_PUBLIC_SUPABASE_URL"];
   const prior = new Map(names.map((name) => [name, process.env[name]]));
@@ -31,20 +31,16 @@ function withEnv(env: Record<string, string | undefined>, run: () => Promise<voi
   });
 }
 
-test("company registry falls back to the env default company", async () => {
-  await withEnv({ MERCURY_COMPANY_ADDRESS: companyA, MERCURY_FOUNDER_ADDRESS: founderA,
+test("company registry never falls back to an environment company", async () => {
+  await withEnv({ MERCURY_ENABLE_DEFAULT_COMPANY: "1", MERCURY_COMPANY_ADDRESS: companyA, MERCURY_FOUNDER_ADDRESS: founderA,
     MERCURY_COMPANY_MINT: DEVNET_USDC }, async () => {
-    const context = await resolveCompany(undefined);
-    assert.equal(context.company, companyA);
-    assert.equal(context.founder, founderA);
-    assert.deepEqual(await resolveCompany(companyA), context);
+    await assert.rejects(() => resolveCompany(undefined), /Company is required/);
+    await assert.rejects(() => resolveCompany(companyA), /not registered/);
   });
 });
 
 test("company registry resolves a static registered company and rejects unknown ones", async () => {
-  await withEnv({ MERCURY_COMPANY_ADDRESS: companyA, MERCURY_FOUNDER_ADDRESS: founderA,
-    MERCURY_COMPANY_MINT: DEVNET_USDC,
-    MERCURY_COMPANY_REGISTRY_JSON: JSON.stringify({ [companyB]: { founder: founderB, mint: DEVNET_USDC } }) },
+  await withEnv({ MERCURY_COMPANY_REGISTRY_JSON: JSON.stringify({ [companyB]: { founder: founderB, mint: DEVNET_USDC } }) },
   async () => {
     const context = await resolveCompany(companyB);
     assert.equal(context.company, companyB);

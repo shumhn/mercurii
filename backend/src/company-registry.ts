@@ -10,9 +10,8 @@ import { SupabasePrivateStore } from "./supabase-private-store.ts";
  * resolves the founder/mint/validator that routes are allowed to act on.
  *
  * Resolution order for a requested company:
- *   1. The env default company (MERCURY_COMPANY_ADDRESS), when configured.
- *   2. A static operator registry (MERCURY_COMPANY_REGISTRY_JSON).
- *   3. The Supabase `mercury_companies` table (registered on-chain shells).
+ *   1. A static operator registry (MERCURY_COMPANY_REGISTRY_JSON).
+ *   2. The Supabase `mercury_companies` table (registered on-chain shells).
  * Anything else is rejected before a route can touch journals or the PER.
  */
 export type CompanyContext = {
@@ -24,21 +23,6 @@ export type CompanyContext = {
 
 const CACHE_MS = 60_000;
 const cache = new Map<string, { context: CompanyContext; expiresAt: number }>();
-
-function defaultContext(): CompanyContext | null {
-  const company = process.env.MERCURY_COMPANY_ADDRESS;
-  const founder = process.env.MERCURY_FOUNDER_ADDRESS;
-  if (!company && !founder) return null;
-  if (!company || !founder) {
-    throw new Error("Set both MERCURY_COMPANY_ADDRESS and MERCURY_FOUNDER_ADDRESS, or neither");
-  }
-  return {
-    company: asAddress(company, "MERCURY_COMPANY_ADDRESS"),
-    founder: asAddress(founder, "MERCURY_FOUNDER_ADDRESS"),
-    mint: asAddress(process.env.MERCURY_COMPANY_MINT, "MERCURY_COMPANY_MINT"),
-    validator: TEE_VALIDATOR.toBase58(),
-  };
-}
 
 function staticRegistry(): Record<string, { founder: unknown; mint: unknown }> {
   const raw = process.env.MERCURY_COMPANY_REGISTRY_JSON;
@@ -61,13 +45,10 @@ export function requestedCompanySelector(input: {
 }
 
 export async function resolveCompany(selector: unknown): Promise<CompanyContext> {
-  const fallback = defaultContext();
   if (selector === undefined || selector === null || selector === "") {
-    if (fallback) return fallback;
-    throw new Error("Company is required; pass company or configure MERCURY_COMPANY_ADDRESS");
+    throw new Error("Company is required");
   }
   const company = asAddress(selector, "company");
-  if (fallback && company === fallback.company) return fallback;
   const staticEntry = staticRegistry()[company];
   if (staticEntry) {
     return {

@@ -92,6 +92,17 @@ export function asMicroAmount(value: unknown): number {
   return value as number;
 }
 
+export function assertRecipientWithdrawalBalance(amountInput: unknown, balanceInput: unknown): number {
+  const amountMicro = asMicroAmount(amountInput);
+  if (typeof balanceInput !== "string" || !/^\d+$/.test(balanceInput)) {
+    throw new Error("Private recipient balance is invalid");
+  }
+  if (BigInt(amountMicro) > BigInt(balanceInput)) {
+    throw new Error("Withdrawal exceeds the private recipient balance");
+  }
+  return amountMicro;
+}
+
 export function canonicalTokenAccount(owner: unknown, mint: unknown): string {
   const ownerKey = new PublicKey(asAddress(owner, "owner"));
   const mintKey = new PublicKey(asAddress(mint, "mint"));

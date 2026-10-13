@@ -61,6 +61,7 @@ test("multi-company requests resolve, isolate, and reject unknown companies", as
     MERCURY_COMPANY_ADDRESS: companyA, MERCURY_FOUNDER_ADDRESS: founderA,
     MERCURY_COMPANY_MINT: DEVNET_USDC,
     MERCURY_COMPANY_REGISTRY_JSON: JSON.stringify({
+      [companyA]: { founder: founderA, mint: DEVNET_USDC },
       [companyB]: { founder: founderB, mint: DEVNET_USDC },
     }),
   }, directory);
@@ -69,7 +70,7 @@ test("multi-company requests resolve, isolate, and reject unknown companies", as
     const health = await (await fetch(`${base}/health`)).json() as Record<string, unknown>;
     assert.equal(health.ok, true);
     assert.equal(health.multiCompany, true);
-    assert.equal(health.companyAddress, companyA);
+    assert.equal("companyAddress" in health, false);
 
     // Unknown company is rejected before any route touches state or the PER.
     const unknown = await fetch(`${base}/v1/payroll-runs`, {
@@ -99,13 +100,13 @@ test("multi-company requests resolve, isolate, and reject unknown companies", as
     assert.equal(scopedB.status, 400);
     assert.doesNotMatch(JSON.stringify(await scopedB.json()), /not registered|Company is required/);
 
-    // Default company A keeps working with no selector at all.
-    const scopedDefault = await fetch(`${base}/v1/payroll-runs`, {
+    // Missing selectors are rejected even when environment variables name a company.
+    const missingCompany = await fetch(`${base}/v1/payroll-runs`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ runId: crypto.randomUUID(), requester: founderA, items: [] }),
     });
-    assert.equal(scopedDefault.status, 400);
-    assert.doesNotMatch(JSON.stringify(await scopedDefault.json()), /not registered|Company is required/);
+    assert.equal(missingCompany.status, 400);
+    assert.match(JSON.stringify(await missingCompany.json()), /Company is required/);
 
     // This ID really exists in A's journal; the identical ID is unavailable
     // through B's HTTP context before any private-chain read can happen.
@@ -120,7 +121,7 @@ test("multi-company requests resolve, isolate, and reject unknown companies", as
   }
 });
 
-test("backend without a default company requires an explicit company", async () => {
+test("backend requires an explicit company", async () => {
   const directory = mkdtempSync(join(tmpdir(), "mercury-multico-nodefault-"));
   const { backend, base } = await startBackend({
     MERCURY_COMPANY_ADDRESS: "", MERCURY_FOUNDER_ADDRESS: "", MERCURY_COMPANY_MINT: "",
@@ -133,7 +134,7 @@ test("backend without a default company requires an explicit company", async () 
   try {
     const health = await (await fetch(`${base}/health`)).json() as Record<string, unknown>;
     assert.equal(health.ok, true);
-    assert.equal(health.companyAddress, null);
+    assert.equal("companyAddress" in health, false);
     const missing = await fetch(`${base}/v1/payroll-runs`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ runId: crypto.randomUUID(), requester: founderB, items: [] }),

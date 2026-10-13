@@ -6,6 +6,7 @@ import bs58 from "bs58";
 import nacl from "tweetnacl";
 import { TEE_RPC } from "./operations.ts";
 import { teeConnection } from "./magicblock.ts";
+import { canonicalMessageBytes } from "./message-hash.ts";
 import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 export type Receipt = {
@@ -67,8 +68,14 @@ export function hydrateOnboardingReceiptCache(receipts: Receipt[]): void {
 }
 
 function deserialize(raw: Buffer): Transaction | VersionedTransaction {
-  try { return VersionedTransaction.deserialize(raw); }
-  catch { return Transaction.from(raw); }
+  // Newer @solana/web3.js accepts legacy bytes in VersionedTransaction.deserialize
+  // without throwing, wrapping the legacy message instead — so detect the version
+  // explicitly: a versioned message sets the high bit on its first byte, which
+  // follows the shortvec signature count and 64-byte signatures.
+  const signatureCount = raw[0] ?? 0;
+  const messageOffset = 1 + signatureCount * 64;
+  const versioned = raw.length > messageOffset && (raw[messageOffset]! & 0x80) !== 0;
+  return versioned ? VersionedTransaction.deserialize(raw) : Transaction.from(raw);
 }
 
 function messageBytes(transaction: Transaction | VersionedTransaction): Buffer {
@@ -76,8 +83,11 @@ function messageBytes(transaction: Transaction | VersionedTransaction): Buffer {
     ? transaction.serializeMessage() : transaction.message.serialize());
 }
 
+/** Receipt IDs are stable against wallet-injected ComputeBudget instructions:
+ * the canonical bytes strip them, so a wallet-signed transaction still binds
+ * to the prepared step it came from. */
 function messageId(transaction: Transaction | VersionedTransaction): string {
-  return createHash("sha256").update(messageBytes(transaction)).digest("hex");
+  return createHash("sha256").update(canonicalMessageBytes(transaction)).digest("hex");
 }
 
 function firstVerifiedSignature(transaction: Transaction | VersionedTransaction): Uint8Array | null {
@@ -103,8 +113,12 @@ export function validateSignedOnboardingReceipt(id: string, company: string, sig
   const bytes = Buffer.from(signedTransactionBase64, "base64");
   const transaction = deserialize(bytes);
   const signature = firstVerifiedSignature(transaction);
-  if (messageId(transaction) !== id || !signature) {
-    throw new Error("Signed transaction does not match the prepared onboarding step");
+  const actualMessageId = messageId(transaction);
+  if (actualMessageId !== id) {
+    throw new Error("Signed transaction does not match the prepared onboarding step (different transaction)");
+  }
+  if (!signature) {
+    throw new Error("Signed transaction does not match the prepared onboarding step (invalid signature)");
   }
   const signatureText = bs58.encode(signature);
   if (receipt.signature && receipt.signature !== signatureText) throw new Error("Receipt already has another signature");

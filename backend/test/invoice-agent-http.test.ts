@@ -35,8 +35,8 @@ test("invoice HTTP suggestion links one guided flow and rejects changed terms", 
   const backend = spawn(process.execPath, ["--experimental-strip-types", "src/server.ts"], {
     cwd: new URL("..", import.meta.url).pathname,
     env: { ...process.env, HOST: "127.0.0.1", PORT: String(backendPort),
-      MERCURY_COMPANY_ADDRESS: company, MERCURY_FOUNDER_ADDRESS: founder,
-      MERCURY_COMPANY_MINT: DEVNET_USDC, MERCURY_ENABLE_INVOICE_AGENT: "1",
+      MERCURY_COMPANY_REGISTRY_JSON: JSON.stringify({ [company]: { founder, mint: DEVNET_USDC } }),
+      MERCURY_ENABLE_INVOICE_AGENT: "1",
       MERCURY_AGENT_API_KEY: "invoice-test-secret-123", MERCURY_SUGGEST_AGENT_ADDRESS: agent,
       MERCURY_LLM_URL: `http://127.0.0.1:${modelPort}/v1/chat/completions`,
       MERCURY_LLM_MODEL: "mock", MERCURY_VENDOR_REGISTRY_JSON: JSON.stringify({
@@ -58,7 +58,7 @@ test("invoice HTTP suggestion links one guided flow and rejects changed terms", 
     assert.equal(ready, true, "backend did not start");
     const suggest = async () => fetch(`${base}/v1/agent/invoice-suggestions`, {
       method: "POST", headers: { authorization: "Bearer invoice-test-secret-123", "content-type": "application/json" },
-      body: JSON.stringify({ vendorId: "acme", invoiceText: "Acme Cloud invoice AC-102 for API credits totaling $12.50." }),
+      body: JSON.stringify({ company, vendorId: "acme", invoiceText: "Acme Cloud invoice AC-102 for API credits totaling $12.50." }),
     });
     const firstResponse = await suggest();
     assert.equal(firstResponse.status, 200);

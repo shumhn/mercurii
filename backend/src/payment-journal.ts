@@ -4,6 +4,7 @@ import { dirname } from "node:path";
 import { Transaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { asAddress } from "./magicblock.ts";
+import { canonicalMessageBytes } from "./message-hash.ts";
 import { mirrorCompanyJournal } from "./supabase-journal-persistence.ts";
 
 export type PaymentRecord = {
@@ -98,7 +99,9 @@ export function registerPayment(args: {
 
 export function preparedMessageHash(transactionBase64: string): string {
   const transaction = Transaction.from(Buffer.from(transactionBase64, "base64"));
-  return createHash("sha256").update(transaction.serializeMessage()).digest("hex");
+  // Canonical bytes: wallet-injected ComputeBudget instructions do not break
+  // the prepared/signed binding (the full signed bytes still get broadcast).
+  return createHash("sha256").update(canonicalMessageBytes(transaction)).digest("hex");
 }
 
 export function preparePayment(id: unknown, company: string, actorInput: string, transactionBase64: string): PaymentRecord {
