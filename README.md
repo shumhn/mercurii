@@ -1,23 +1,77 @@
-<div align="center">
-  <img src="frontend/public/mercurii-symbol-blue.png" alt="Mercurii symbol" width="56" />
+<p align="center"><img src="frontend/public/mercurii-symbol-blue.png" alt="Mercurii symbol" width="56" /></p>
 
-# Mercurii
+<h1 align="center">Mercurii</h1>
 
-**Private financial operations for onchain stablecoin businesses.**
+<p align="center"><strong>Private financial operations for onchain stablecoin businesses.</strong></p>
 
-[Website](https://www.trymercurii.xyz/) · [How it works](#how-mercurii-works) · [MagicBlock integration](#why-magicblock) · [Devnet proof](#devnet-proof) · [Run locally](#run-locally)
+<p align="center">
+  <a href="https://www.trymercurii.xyz/">Website</a> ·
+  <a href="#overview">Overview</a> ·
+  <a href="#magicblock-integration">MagicBlock</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#devnet-proof">Devnet proof</a> ·
+  <a href="#getting-started">Getting started</a>
+</p>
 
-</div>
+---
 
-Mercurii is a private USDC operating account for startups, agencies, and onchain teams. It brings receiving, treasury visibility, payment approvals, payroll, vendor payouts, team permissions, settlement tracking, and bounded AI-agent activity into one workflow.
+## Overview
 
-**Status:** Working Solana devnet implementation. The codebase includes a Next.js workspace, a separate noncustodial API, an Anchor program, MagicBlock Private Ephemeral Rollup (PER) integration, and encrypted operational storage. It is not audited or ready for real company funds. The availability of money-moving and agent features depends on the running backend's explicit capability flags.
+Mercurii is a private USDC operating account for startups, agencies, and onchain teams. A Founder creates a company, activates private operations, receives USDC, and then invites people into scoped finance workflows. The workspace covers treasury visibility, invoices and payment requests, payroll, vendor payouts, approvals, settlement tracking, and bounded AI-agent activity.
+
+| Capability | What the user can do |
+| --- | --- |
+| **Private treasury** | Receive into a company-controlled private balance and refresh a permissioned treasury snapshot. |
+| **Company payments** | Create requests, approve them under policy, execute once, and reconcile signed receipts. |
+| **Payroll and payees** | Group employee payouts into runs, track each item, and onboard recipients for private balances. |
+| **Team access** | Give Founder, Finance, Manager, Requester, Viewer, and Agent wallets distinct scopes; revoke grants and clean up historical readers. |
+| **AI assistance** | Inspect authorized records and prepare drafts; separately funded agents have bounded payment rules when enabled. |
+
+**Current status:** This is a Solana devnet MVP with a Next.js workspace, separate noncustodial API, Anchor program, MagicBlock Private Ephemeral Rollup (PER), and encrypted operational storage. It is not audited or ready for real company funds. The running backend's capability flags determine which money-moving and agent features are available; the UI does not replace unavailable state with sample financial data.
+
+## MagicBlock integration
+
+MagicBlock is Mercurii's private payment and execution layer. The **Private Payments API** constructs unsigned USDC deposits and recipient withdrawals for wallet review. The **PER** holds delegated company policy, grants, payment requests, agent policy, and treasury snapshots in a TEE-backed environment. The Mercury program enforces spending and approval rules there.
+
+### End-to-end company payment
+
+1. A Founder signs creation of a minimal company policy account on Solana devnet.
+2. Mercurii delegates the account to the MagicBlock PER, initializes its permission account, and activates private readers **before** writing sensitive limits.
+3. A payer signs an unsigned Private Payments deposit. An authorized wallet then signs a treasury snapshot sync; the UI shows the confirmed private balance rather than assuming a submitted deposit has settled.
+4. A requester creates and delegates a payment-request shell. PER permission initialization and privacy activation precede writing the recipient and amount.
+5. The requester submits the private terms. Founder, or an authorized Finance or scoped Manager wallet, approves within its grant. Founder or authorized Finance signs execution; Manager cannot release treasury funds.
+6. Mercury checks the request status, recipient, role, limits, budget, and token balance, then moves private USDC and marks the request executed in one PER transaction. The application reconciles the signed receipt and refreshes the treasury snapshot.
+
+```mermaid
+flowchart LR
+    Founder[Founder wallet] -->|signs company setup| Base[Solana devnet shell]
+    Base -->|delegate| PER[MagicBlock TEE / PER]
+    Payer[Payer wallet] -->|signed private deposit| Payments[Private Payments API]
+    Payments --> PER
+    PER -->|permissions before terms| Request[Private payment request]
+    Request -->|approval and execution| Program[Mercury program checks]
+    Program --> Recipient[Recipient private USDC balance]
+    Program --> Snapshot[Private treasury snapshot]
+```
+
+Mercurii verifies the required signer, transfer route, destination RPC, and expected validator before submitting a Private Payments builder result. PER permissions govern **who can read** an account; the Mercury program separately checks **who may act or spend**. Neither mechanism replaces the other. For implementation detail, see [architecture](docs/ARCHITECTURE.md), [PER transaction catalog](docs/magicblock-per-proof-catalog.md), and the [generated IDL](backend/idl/mercury.json).
 
 ## The problem
 
 A client can pay an agency in stablecoins from anywhere, and the agency can pay a remote team without waiting for bank hours. But once the company's public wallet is associated with its name, observers may infer revenue, balances, payroll timing, vendor relationships, and cash flow. A shared wallet also gives a growing team no clear answer to who may prepare, approve, or execute a payment.
 
 Mercurii gives that business a company account with private operating state and explicit authority for each person or agent. The Founder can see the full company picture; a Finance operator works within a grant; a Manager can approve a scoped request; a recipient can see their own private balance.
+
+## Who it is for
+
+| User | Workspace scope |
+| --- | --- |
+| **Founder** | Creates the company, sets limits, manages grants, sees the full private treasury, and can approve and execute payments. |
+| **Finance** | Prepares, approves, executes, and reconciles within a Founder-issued grant and its recipient and spending limits. |
+| **Manager** | Handles requests explicitly shared with their branch and approval scope; cannot execute a treasury payout. |
+| **Requester or employee** | Prepares their own requests and sees only records shared with them; receiving a salary does not grant treasury authority. |
+| **Viewer or auditor** | Reads only assigned private records or a frozen, expiring audit bundle. |
+| **Agent** | Reads permitted records or spends from a separate capped float; cannot acquire unrestricted treasury authority. |
 
 ## What the application covers
 
@@ -32,7 +86,7 @@ Mercurii gives that business a company account with private operating state and 
 
 The interface uses real backend and chain state. A disabled feature or denied private read is shown as unavailable; it is not replaced with a sample balance or payment.
 
-## How Mercurii works
+## How it works
 
 1. **Create a company.** The Founder connects a Solana devnet wallet and signs creation of the company account. Its address is a program-derived account, not a wallet that holds USDC. The Founder is the initial administrator; teammates are added later.
 2. **Activate private operations.** A guided flow delegates the company's account to MagicBlock, creates its PER permission, activates privacy, writes spending limits, and sets up a private treasury snapshot.
@@ -43,14 +97,19 @@ The interface uses real backend and chain state. A disabled feature or denied pr
 
 Every company payment is completed by an authorized wallet signature. Mercurii's API constructs and validates transactions but does not hold the Founder's private key.
 
-## Why MagicBlock
+### Founder demo walkthrough
 
-MagicBlock supplies two capabilities that a normal public wallet does not provide:
+1. Open `/app` and connect the wallet that will be the Founder. **Create company** makes that wallet the initial administrator; a Finance wallet is not required first.
+2. Sign each **Company setup** step. Wait for its receipt and confirmed chain status before advancing through delegation, private permission, privacy activation, spending limits, and balance tracker.
+3. Open **Receive**, sign a devnet deposit when the receive route is enabled, and refresh the private treasury snapshot. The displayed balance is not a live read of a public wallet.
+4. In **Payees** and **Team access**, add a recipient and grant only the access needed for the demo.
+5. In **Payments**, create a request, sign its private setup and submission, approve it with an authorized wallet, execute, and check its receipt in **Records**. **Payroll** groups the same kind of requests into a run.
 
-- **Private Payments API** builds unsigned USDC deposits into private balances and recipient-signed withdrawals. Mercurii checks the requested route, required signer, destination RPC, and expected validator before using a builder result.
-- **Private Ephemeral Rollup (PER)** runs delegated company, grant, request, agent, and snapshot accounts in a TEE-backed environment. Mercurii activates account permissions before writing sensitive operating terms. Authorized wallets authenticate to the TEE to read those accounts.
+This is a wallet-signed devnet walkthrough. Actual prompts, enabled buttons, and balances depend on the current company, funding, permissions, and backend `/health` capabilities.
 
-The Mercury Anchor program supplies the business rules inside that environment: signer and role checks, recipient allowlists, per-payment and period limits, approval requirements, reserved budget, revocation, and one-time execution. PER permission controls **who can read**; the program checks **who can act**. Neither layer is a substitute for the other.
+## Architecture
+
+The browser collects wallet signatures. The API verifies session and transaction details, prepares unsigned actions, recovers receipts, and stores encrypted workflow records. Company spending authority remains with wallet signers and Mercury's onchain checks; Supabase is not a treasury key store.
 
 ```mermaid
 flowchart LR
@@ -81,7 +140,7 @@ Mercurii does **not** claim complete anonymity. Program and account addresses, p
 
 ## Devnet proof
 
-The deployed Mercury program is [`34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L`](https://explorer.solana.com/address/34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L?cluster=devnet). Its generated [IDL](backend/idl/mercury.json) is included in this repository.
+The [deployed Mercury program](https://explorer.solana.com/address/34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L?cluster=devnet) and its generated [IDL](backend/idl/mercury.json) are listed below.
 
 These transactions show one recorded MagicBlock payment-request sequence. The first two steps use Solana devnet to create and delegate a public shell. The remaining links use the MagicBlock TEE devnet endpoint. They demonstrate the request through private approval and snapshot sync; execution is evidenced separately below.
 
@@ -97,7 +156,18 @@ These transactions show one recorded MagicBlock payment-request sequence. The fi
 
 A separate guided Circle devnet USDC payment reached [private execution](https://explorer.solana.com/tx/37VYbGscUSXFs7wqjf1i5rBwJrCz5CM6LejpXdfhHJti5NZNgwmzDPw6NX1HN8X4TkswhYGoRSSQ9BQ1B7CmuvwN?cluster=devnet) and then [treasury snapshot refresh](https://explorer.solana.com/tx/2hpoGyWdyPvZfP8AwaK2G3BNbnPwVMj7B5fquniZcnfGsWRw7y7zyMdXUJ9YTJzmKn89ovvhrBcbJS9Y6V3vX8i5?cluster=devnet). See the [PER proof catalog](docs/magicblock-per-proof-catalog.md) for source receipts and the [historical implementation log](docs/DEVNET_IMPLEMENTATION_LOG.md) for additional payroll, team, recipient, and agent evidence.
 
-## Run locally
+## On-chain program
+
+| Item | Value |
+| --- | --- |
+| Mercury program | [`34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L`](https://explorer.solana.com/address/34Ah4S3AWxXDU9GebANCqJC3qJ91ybZrZ6LDC5HJnX4L?cluster=devnet) |
+| Generated program IDL | [`backend/idl/mercury.json`](backend/idl/mercury.json) |
+| MagicBlock private devnet endpoint | `https://devnet-tee.magicblock.app` |
+| Circle devnet USDC mint | `4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU` |
+
+The program models company policy, team grants, payment requests, treasury snapshots, and agent policy as separate accounts. Its instructions include company initialization and delegation, private permission activation, spending-limit configuration, request submission, approval, one-time execution, agent float funding, bounded agent payment, and revocation. The [source](programs/mercury/src/lib.rs) and [IDL](backend/idl/mercury.json) show the exact interface.
+
+## Getting started
 
 **Prerequisites:** Node.js 22 or newer, a Solana devnet wallet with devnet SOL, access to Circle devnet USDC for payment flows, and a Supabase project with the repository's migrations applied. New-company registration requires the Supabase private store.
 
@@ -125,15 +195,7 @@ curl http://127.0.0.1:8787/health
 
 The backend gates private receive, token transfer execution, Finance Agent, x402, and recipient withdrawal behind `MERCURY_ENABLE_EXPERIMENTAL_RECEIVE`, `MERCURY_ENABLE_EXPERIMENTAL_TOKEN_CPIS`, `MERCURY_ENABLE_FINANCE_ASSISTANT`, `MERCURY_ENABLE_X402_AGENT`, and `MERCURY_ENABLE_EXPERIMENTAL_WITHDRAW`. A value of `1` enables the corresponding devnet route; absent flags leave it unavailable. Check `/health` and configure the required dependencies before attempting a flow. The website can load while the independently hosted API is unavailable.
 
-### Try the Founder flow
-
-1. Open `/app`, choose **Start a company**, and connect the wallet that will be Founder.
-2. Review and sign **Create company account**. The displayed company account address identifies the company; it is not its token vault.
-3. Register the confirmed company shell, then complete **Company setup** one signed step at a time. Wait for each receipt to confirm before continuing.
-4. Open **Receive** to fund the private treasury when the receive capability is enabled. Confirm the private balance snapshot after funding.
-5. Add a payee, configure a team grant if needed, create a private payment request, approve it, and follow the execution and settlement record when those capabilities are enabled.
-
-The workspace does not generate a funded demo company or fallback financial records. Use an actual devnet company and wallet signatures.
+The workspace does not generate a funded demo company or fallback financial records. Use an actual devnet company and wallet signatures. The [Founder demo walkthrough](#founder-demo-walkthrough) gives the click order.
 
 ## Build and test
 
@@ -146,7 +208,7 @@ cargo test -p mercury
 
 `npm run check` typechecks the backend and builds the Next.js app. Live PER transaction tests require a configured devnet environment and wallet funding; passing local tests does not establish that a new company can complete every browser flow.
 
-## Repository map
+## Repository structure
 
 | Path | Purpose |
 | --- | --- |
