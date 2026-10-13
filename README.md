@@ -8,6 +8,9 @@
   <a href="https://www.trymercurii.xyz/">Website</a> ·
   <a href="#overview">Overview</a> ·
   <a href="#magicblock-integration">MagicBlock</a> ·
+  <a href="#market-opportunity">Market</a> ·
+  <a href="#competitive-landscape">Competitors</a> ·
+  <a href="#business-model">Business model</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#devnet-proof">Devnet proof</a> ·
   <a href="#getting-started">Getting started</a>
@@ -73,6 +76,76 @@ Mercurii gives that business a company account with private operating state and 
 | **Viewer or auditor** | Reads only assigned private records or a frozen, expiring audit bundle. |
 | **Agent** | Reads permitted records or spends from a separate capped float; cannot acquire unrestricted treasury authority. |
 
+## Market opportunity
+
+Stablecoins are already a business payment rail. [Allium's September 2026 research](https://www.allium.so/reports/state-of-stablecoins-and-payments-september-2026) estimates the following payment flows from January through August 2026:
+
+| Payment lane | Estimated volume | Why it matters to Mercurii |
+| --- | ---: | --- |
+| All stablecoin payments | **$401B–$527B** | Establishes that the payment rail is being used. |
+| B2B settlement | **$137B–$153B** | Companies are already counterparties. |
+| Service fees | **$56B** | Relevant to agencies and studios receiving client revenue. |
+| Payroll | **$43B** | Relevant to recurring team payouts. |
+| Supplier payments | **$28B** | Relevant to vendor and contractor workflows. |
+
+These are estimated market-wide payment flows, **not Mercurii's addressable revenue or transaction volume**. Allium also reports that businesses received 58%–64% of stablecoin payments during this period. The opportunity for Mercurii is the software layer companies need around those payments: confidentiality, permissions, approvals, and reconciliation.
+
+Mercurii's initial target buyer is narrower: a **2–50 person crypto-native agency, product studio, or onchain startup** that already receives USDC and regularly pays remote contractors or vendors. Its founder or finance lead feels the privacy and approval problem today, without first needing a new fiat account or a full HR system.
+
+| Segment | Starting need | Product expansion |
+| --- | --- | --- |
+| Crypto agencies and studios | Confidential client revenue, vendor and contractor payouts. | Recurring payroll batches and finance-team access. |
+| Onchain startups | Founder-controlled treasury with explicit approval and spending limits. | Branch/team scopes and accountant sharing. |
+| Distributed service networks | Repeated payouts across many recipients. | API workflows and bounded agent operations. |
+
+The revenue opportunity still needs a bottom-up measure: **qualified reachable teams × validated annual contract value**, plus any net revenue from private operations. We have not established that buyer count, willingness to pay, or a revenue TAM. The [market research](research/mercurii-market-research-2026-10-13.md) records the assumptions and interview plan.
+
+## Competitive landscape
+
+The alternatives already solve meaningful parts of company finance. Mercurii's proposed difference is one private operating state spanning treasury, requests, approvals, role-scoped records, and bounded agents; that differentiation must be proven through repeat use and security work.
+
+| Alternative | What it offers today | Where Mercurii aims to differ |
+| --- | --- | --- |
+| [Request Finance](https://www.requestfinance.com/) | Business accounts, invoices, approvals, payroll, accounting, and stablecoin/fiat payments. Its [private payments](https://help.request.finance/en/articles/12958312-private-payments-overview) use partner custodial wallets to obscure payment linkage. | Self-custodial Solana policy plus permissioned company operating records, rather than private routing alone. |
+| [Umbra Payroll](https://payroll.umbraprivacy.com/) | Private, noncustodial Solana payroll, employee balances, and withdrawals. | A broader company account for incoming revenue, vendors, approvals, records, and agent permissions. |
+| [Squads](https://docs.squads.so/main/getting-started/treasury-management-overview) | Self-custodial treasury, multisig policy, spending limits, and payments. | Confidential operating details and scoped financial reads alongside program-enforced authority. |
+| [Ramp for Agents](https://agents.ramp.com/) | Agent identity, owner, budget, human approver, merchant restrictions, and audit trail. | Bounded agent activity linked to a private Solana company treasury workflow. |
+| Wallet or multisig plus spreadsheet | Familiar tools for signing and tracking payments. | One workflow for private balances, requests, approvals, recipients, and reconciliation. |
+
+Mercurii has a differentiated design, **not yet a proven moat**. Request Finance has a much wider finance suite; Umbra focuses sharply on payroll; Squads has mature treasury infrastructure. Mercurii must earn trust through a repeatable signed browser flow, independent security review, integrations, and design-partner retention. See the fuller [competitive research](research/mercurii-market-research-2026-10-13.md#6-competitive-landscape).
+
+## Go-to-market strategy
+
+| Stage | Action | What to learn |
+| --- | --- | --- |
+| **Find the first teams** | Recruit USDC-first agencies and studios with monthly contractor or vendor payouts. | Who owns finance, how often they pay, and where the current workflow breaks. |
+| **Demonstrate the problem** | Show what an observer can infer from a known public company wallet, with Mercurii's own metadata boundary stated plainly. | Whether privacy and delegated approval are urgent enough to change tools. |
+| **Run a repeated workflow** | Complete receive → request → approval → payout → reconciliation with real signatures over more than one payment cycle. | Completion, repeat usage, failures, and support cost. |
+| **Expand the account** | Add payroll batches, accountant sharing, integrations, and agent controls for teams that return. | Which workflow earns a paid subscription and which needs usage pricing. |
+
+Potential distribution includes Solana and MagicBlock teams, crypto agencies, accelerator cohorts, and finance/accounting partners. Design partners, conversion, retention, and willingness to pay are **validation goals**, not claimed current traction. The local [pitch deck](docs/pitch/mercurii-devnet-deck-2026-10-13.html) shows the same product story and labels its technical proof separately from commercial evidence.
+
+## Business model
+
+The proposed model is **software subscription plus measured private-operation usage**, with no token required. Billing is not implemented in the devnet app, and the figures below are pricing hypotheses for interviews rather than active plans.
+
+| Proposed tier | Buyer and value | Pricing hypothesis |
+| --- | --- | --- |
+| **Team** | Founder-led private treasury, requests, basic roles, and payouts. | Around **$99/month**. |
+| **Operations** | Regular payroll/vendor batches, approval policy, reconciliation, and scoped reporting. | Around **$299/month**. |
+| **Platform** | API access, advanced agent limits, multiple entities, and integrations when built. | Around **$599/month**. |
+
+These hypotheses should be tested against competitors' published [subscription pricing](https://www.requestfinance.com/pricing) and actual interviews. A possible usage unit is a completed private payment or payroll item, with a bundled monthly allowance to keep bills predictable. The unit contribution would be **collected usage fee − MagicBlock/PER, RPC, storage, and support costs**. Those costs and willingness to pay have not yet been measured, so Mercurii has **no claimed customers, payment revenue, ARR, or validated unit economics** in this repository.
+
+## Roadmap
+
+| Stage | Milestone |
+| --- | --- |
+| **Built on devnet** | Mercury program, PER account delegation and permissions, recorded private receive/approval/payment proofs, Next.js workspace, API, and encrypted records. |
+| **Next demo gate** | Replay one complete Founder-to-recipient flow in the current browser/backend environment; confirm every runtime capability and recovery step with real wallet signatures. |
+| **Design-partner gate** | Interview target teams, observe repeated payment runs, test subscription willingness to pay, and measure retained use. |
+| **Production gate** | Independent program/security review, operational recovery, durable multi-company services, compliance review, and a limited-funds pilot. |
+
 ## What the application covers
 
 | Workflow | Mercurii behavior |
@@ -110,6 +183,15 @@ This is a wallet-signed devnet walkthrough. Actual prompts, enabled buttons, and
 ## Architecture
 
 The browser collects wallet signatures. The API verifies session and transaction details, prepares unsigned actions, recovers receipts, and stores encrypted workflow records. Company spending authority remains with wallet signers and Mercury's onchain checks; Supabase is not a treasury key store.
+
+| Component | Role |
+| --- | --- |
+| **Next.js workspace** | Guided Founder setup and role-scoped finance screens; wallet signs every treasury action. |
+| **Mercurii API** | Authenticates wallet sessions, validates transaction builders, coordinates signed steps, and reconciles receipts. |
+| **Mercury Anchor program** | Enforces company roles, recipients, budgets, approvals, revocation, and one-time payment execution. |
+| **MagicBlock PER and eSPL** | Executes delegated confidential state and keeps operating token balances available to authorized readers. |
+| **Private Payments API** | Prepares wallet-signed deposits and recipient withdrawals; it does not approve company spend. |
+| **Supabase and encrypted records** | Persists private workflow metadata and recovery state without holding company signing keys. |
 
 ```mermaid
 flowchart LR
