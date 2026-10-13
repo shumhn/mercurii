@@ -2,7 +2,7 @@
 
 <h1 align="center">Mercurii</h1>
 
-<p align="center"><strong>Private financial operations for onchain stablecoin businesses.</strong></p>
+<p align="center"><strong>Private financial operations for stablecoin businesses on Solana.</strong></p>
 
 <p align="center">
   <a href="https://www.trymercurii.xyz/">Website</a> ·
@@ -20,7 +20,7 @@
 
 ## Overview
 
-Mercurii is a private USDC operating account for startups, agencies, and onchain teams. A Founder creates a company, activates private operations, receives USDC, and then invites people into scoped finance workflows. The workspace covers treasury visibility, invoices and payment requests, payroll, vendor payouts, approvals, settlement tracking, and bounded AI-agent activity.
+Mercurii is a private financial operations platform for stablecoin businesses on Solana. A Founder creates a company, activates private operations, receives stablecoins, and then invites people into scoped finance workflows. The workspace brings private treasury activity, invoices and payment requests, payroll, vendor payouts, approvals, settlement tracking, and bounded agent payments into one controlled flow. The current devnet implementation uses Circle USDC for its signed payment paths.
 
 | Capability | What the user can do |
 | --- | --- |
@@ -28,13 +28,14 @@ Mercurii is a private USDC operating account for startups, agencies, and onchain
 | **Company payments** | Create requests, approve them under policy, execute once, and reconcile signed receipts. |
 | **Payroll and payees** | Group employee payouts into runs, track each item, and onboard recipients for private balances. |
 | **Team access** | Give Founder, Finance, Manager, Requester, Viewer, and Agent wallets distinct scopes; revoke grants and clean up historical readers. |
-| **AI assistance** | Inspect authorized records and prepare drafts; separately funded agents have bounded payment rules when enabled. |
+| **AI assistance** | Inspect authorized records, check invoices and budgets, and prepare unsigned drafts for human review. |
+| **x402 tool payments** | A Founder can authorize an agent to buy an approved API resource with a separate, limited wallet; the service, recipient, exact quote, and caps are checked before payment. |
 
 **Built on Solana devnet:** Mercurii combines a Next.js workspace, noncustodial API, Anchor program, MagicBlock Private Ephemeral Rollup (PER), and encrypted operational storage. The [signed transaction trail](#devnet-proof) shows a company funded with Circle devnet USDC, private request approval and execution, and a refreshed treasury snapshot. The running backend's capability flags determine which workflows are available in a new session.
 
 ## MagicBlock integration
 
-MagicBlock is Mercurii's private payment and execution layer. The **Private Payments API** constructs unsigned USDC deposits and recipient withdrawals for wallet review. The **PER** holds delegated company policy, grants, payment requests, agent policy, and treasury snapshots in a TEE-backed environment. The Mercury program enforces spending and approval rules there.
+MagicBlock is Mercurii's private payment and execution layer. The **Private Payments API** constructs unsigned devnet USDC deposits and recipient withdrawals for wallet review. The **PER** holds delegated company policy, grants, payment requests, agent policy, and treasury snapshots in a TEE-backed environment. The Mercury program enforces spending and approval rules there. This gives founders a private operating view while teammates see only the records their roles permit.
 
 ### End-to-end company payment
 
@@ -90,7 +91,7 @@ Stablecoins are already a business payment rail. [Allium's September 2026 resear
 
 These are estimated market-wide payment flows, **not Mercurii's addressable revenue or transaction volume**. Allium also reports that businesses received 58%–64% of stablecoin payments during this period. The opportunity for Mercurii is the software layer companies need around those payments: confidentiality, permissions, approvals, and reconciliation.
 
-Mercurii's initial target buyer is narrower: a **2–50 person crypto-native agency, product studio, or onchain startup** that already receives USDC and regularly pays remote contractors or vendors. Its founder or finance lead feels the privacy and approval problem today, without first needing a new fiat account or a full HR system.
+Mercurii's initial target buyer is narrower: a **2–50 person crypto-native agency, product studio, or onchain startup** that already uses stablecoins and regularly pays remote contractors or vendors. Its founder or finance lead needs privacy and approval controls without first adopting a new fiat account or a full HR system. The devnet product starts with Circle USDC.
 
 | Segment | Starting need | Product expansion |
 | --- | --- | --- |
@@ -118,7 +119,7 @@ Mercurii has a differentiated design, **not yet a proven moat**. Request Finance
 
 | Stage | Action | What to learn |
 | --- | --- | --- |
-| **Find the first teams** | Recruit USDC-first agencies and studios with monthly contractor or vendor payouts. | Who owns finance, how often they pay, and where the current workflow breaks. |
+| **Find the first teams** | Recruit stablecoin-using agencies and studios with monthly contractor or vendor payouts. | Who owns finance, how often they pay, and where the current workflow breaks. |
 | **Demonstrate the problem** | Show what an observer can infer from a known public company wallet, with Mercurii's own metadata boundary stated plainly. | Whether privacy and delegated approval are urgent enough to change tools. |
 | **Run a repeated workflow** | Complete receive → request → approval → payout → reconciliation with real signatures over more than one payment cycle. | Completion, repeat usage, failures, and support cost. |
 | **Expand the account** | Add payroll batches, accountant sharing, integrations, and agent controls for teams that return. | Which workflow earns a paid subscription and which needs usage pricing. |
@@ -127,15 +128,15 @@ Potential distribution includes Solana and MagicBlock teams, crypto agencies, ac
 
 ## Business model
 
-The proposed model is **software subscription plus measured private-operation usage**, with no token required. Billing is not implemented in the devnet app, and the figures below are pricing hypotheses for interviews rather than active plans.
+The team's business-model pitch slide proposes a **subscription with a free starting period**. These are proposed packages for customer discovery; billing and plan entitlements are not active in the devnet app.
 
-| Proposed tier | Buyer and value | Pricing hypothesis |
+| Proposed plan | Price | Included in the pitch |
 | --- | --- | --- |
-| **Team** | Founder-led private treasury, requests, basic roles, and payouts. | Around **$99/month**. |
-| **Operations** | Regular payroll/vendor batches, approval policy, reconciliation, and scoped reporting. | Around **$299/month**. |
-| **Platform** | API access, advanced agent limits, multiple entities, and integrations when built. | Around **$599/month**. |
+| **3-month trial** | **Free** for the first three months | 1 treasury, 2 members, private activity view, and 10 private transfers per month; no API or automation. |
+| **Basic** | **$149–$199/month** | Up to 10 members, roles and approval flows, budget rules, private vendor payments, recurring payroll, and limited agents and automation. |
+| **Business** | **$499+/month** | Multiple departments and treasuries, agent wallets, advanced policies and audit logs, API and programmatic payment controls, and priority support. |
 
-These hypotheses should be tested against competitors' published [subscription pricing](https://www.requestfinance.com/pricing) and actual interviews. A possible usage unit is a completed private payment or payroll item, with a bundled monthly allowance to keep bills predictable. The unit contribution would be **collected usage fee − MagicBlock/PER, RPC, storage, and support costs**. Those costs and willingness to pay have not yet been measured, so Mercurii has **no claimed customers, payment revenue, ARR, or validated unit economics** in this repository.
+The model scales with a team's operating needs: a founder starts with a private treasury, adds people and repeatable payments, then adopts deeper controls and automation. The proposed prices and allowances come from the existing Mercury business-model slide; they need customer validation before launch. Private-operation usage could be metered above a bundled allowance once MagicBlock/PER, RPC, storage, and support costs are measured. The current program and app implement specific devnet workflows, not all proposed Business-plan entitlements.
 
 ## Roadmap
 
@@ -154,7 +155,9 @@ These hypotheses should be tested against competitors' published [subscription p
 | **Pay contractors and vendors** | Prepare a private request, collect the required approval, execute a policy-checked payout, and reconcile its signed receipt. |
 | **Payroll** | Preview and check a roster, approve items in chunks, and track each payout separately. Recurring schedules still require human signatures to release funds. |
 | **Team permissions** | Founder, Finance, Manager, Requester, Viewer, and Agent grants have distinct scopes. Revocation includes guided cleanup of historical private readers. |
-| **AI assistance** | Authorized tools can inspect permitted records, check invoices and budgets, and prepare payment drafts. A separately funded AgentPolicy can cap an agent's onchain spending; x402 uses a separate bounded wallet when enabled. |
+| **AI assistance** | Authorized tools can inspect permitted records, check invoices and budgets, and prepare unsigned payment drafts for human review. |
+| **Bounded onchain agents** | A separately funded AgentPolicy limits a private PER payment by recipient and spend policy. |
+| **x402 API purchases** | With explicit Founder authorization, an agent can inspect and buy an approved paid API resource from a separately funded wallet, then return a verified settlement receipt. |
 | **Records and audit** | Compare private request state, signed receipts, treasury snapshots, and selected frozen audit disclosures. |
 
 The interface uses real backend and chain state. A disabled feature or denied private read is shown as unavailable; it is not replaced with a sample balance or payment.
@@ -167,6 +170,7 @@ The interface uses real backend and chain state. A disabled feature or denied pr
 4. **Set access.** The Founder grants Finance, Requester, or Viewer access. An authorized Finance operator may grant a narrower Manager scope. Private reads follow PER permissions; spending follows program checks.
 5. **Run payments.** The application guides request creation, delegation, permission activation, private submission, approval, execution, and receipt reconciliation. A completed request cannot be executed twice.
 6. **Pay the team.** Payroll groups private payment requests, approves up to eight items per transaction, and tracks each payout independently. A recipient can read their private balance and sign a withdrawal when that route is enabled.
+7. **Use bounded automation.** An authorized agent can inspect scoped company records and prepare a payment for a human signer. A Founder can separately assign an x402 purchase from an isolated, limited wallet for an approved tool or API.
 
 Every company payment is completed by an authorized wallet signature. Mercurii's API constructs and validates transactions but does not hold the Founder's private key.
 
@@ -192,6 +196,7 @@ The browser collects wallet signatures. The API verifies session and transaction
 | **MagicBlock PER and eSPL** | Executes delegated confidential state and keeps operating token balances available to authorized readers. |
 | **Private Payments API** | Prepares wallet-signed deposits and recipient withdrawals; it does not approve company spend. |
 | **Supabase and encrypted records** | Persists private workflow metadata and recovery state without holding company signing keys. |
+| **x402 purchase adapter** | Checks a Founder-approved service, recipient, exact devnet USDC quote, and local spending caps; pays from a separate funded signer and verifies the settlement receipt. |
 
 ```mermaid
 flowchart LR
@@ -205,6 +210,9 @@ flowchart LR
     API -->|authenticated private reads| PER
     PER --> P[Mercury program rules]
     P --> T[Private USDC balances]
+    API -->|approved x402 task| X[x402 adapter and isolated wallet]
+    X -->|inspect offer and send payment proof| M[Approved API merchant]
+    X -->|signed public payment| S
 ```
 
 ### Where data lives
@@ -215,10 +223,17 @@ flowchart LR
 | **MagicBlock PER** | Permissioned company rules, team grants, payment requests, agent limits, treasury snapshots, and private execution. |
 | **Private USDC balances** | Company, recipient, and isolated agent float balances on the selected PER. |
 | **Mercurii API and Supabase** | Wallet challenge verification, unsigned transaction preparation, receipt recovery, and encrypted workflow records. The database is not spending authority. |
+| **Isolated x402 wallet** | A separately funded signer for Founder-assigned API purchases. Its transfers settle publicly on Solana devnet and do not spend from the PER company treasury. |
 
 ### Privacy model
 
 Mercurii keeps company operating details in permissioned PER accounts: balances, requests, recipients, amounts, grants, and spending policy are shared with the wallets authorized for each record. Solana devnet continues to record public account creation, delegation, and the base-layer legs of funding or withdrawal. An authorized wallet signs a snapshot refresh to bring the displayed treasury balance up to date; access changes follow confirmed permission updates and reader cleanup.
+
+### Two agent payment paths
+
+**Private company payments** stay in the PER workflow. An authorized agent can inspect permitted records and prepare an unsigned draft; the required human wallet reviews and signs company spending. A separately funded PER AgentPolicy also supports a capped private payment under the program's recipient and budget checks.
+
+**x402 tool purchases** pay for an approved API resource from a different, limited wallet. The Founder signs a one-use intent naming the service, task, recipient, and maximum amount. The adapter inspects the live x402 quote, checks its allowlist and local per-purchase and period caps, pays the exact approved devnet USDC amount, and verifies the receipt. This wallet does not have the company treasury key. Its Solana transfer is public; company records consulted by the assistant remain behind their PER permissions. The x402 route is available when its backend capability and funded signer are configured.
 
 ## Devnet proof
 
@@ -240,7 +255,17 @@ The [Mercury program](https://explorer.solana.com/address/34Ah4S3AWxXDU9GebANCqJ
 
 ### Payroll, agents, and recipient proof
 
-**More verified Mercurii actions:** A [request shell delegation](https://explorer.solana.com/tx/TnnrvjxM9CgLZCjTUSGriGEsL97EAKSe96UnqZpdhzGS8hYZ2A82FF4JCGYiX4xW4YJFGZQ3PC1JzihcYKAAoPN?cluster=devnet) shows the public-to-PER handoff in another company flow. A nine-person payroll run has [eight approvals](https://explorer.solana.com/tx/56EJD3KHVV36bGZ4MAZDhiMjiJ9wL13HcH4ws78j5avg7HN4DweChg2tUsCUfbaPMjJMU6ybjx3WhnDWxiNTTP7A?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) followed by a [ninth approval](https://explorer.solana.com/tx/241VrkxaBChrefpHn4GWkbAi8RJaADi9uGy1qUpXQY7k38bPXvH3jydQpdVdamU6RSAFN4EKwDGtQcFAeCp3CBAW?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app). An Agent made a [capped private USDC payment](https://explorer.solana.com/tx/36iv6JU7B2a2YSxVKpn9Z6bh4B7N7nHWmw7fPV1dBikTcc6MYTgYV21mn71C16bZD3Ebfq9UPhQqW7QjbLdXJvWz?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app), and a recipient signed a [private-to-base USDC withdrawal](https://explorer.solana.com/tx/2r8fGya6fpM3xkRHkE9dXWk843BUur9vM5CLZQk6ebKUg7q6hufinfb7hJhqBoR9NKHSrHDeZvi4PdVDmZFmLMWo?cluster=devnet). These examples come from separate recorded devnet tests; the table above is the single-company payment sequence. The [PER proof catalog](docs/magicblock-per-proof-catalog.md) records 218 finalized PER signatures as of its 12 October 2026 export, and the [implementation log](docs/DEVNET_IMPLEMENTATION_LOG.md) explains the wider receipt history.
+These are **separate recorded devnet tests** alongside the single-company payment sequence above:
+
+| Workflow | Explorer proof | Network |
+| --- | --- | --- |
+| Delegate a payment request shell | [Delegation](https://explorer.solana.com/tx/TnnrvjxM9CgLZCjTUSGriGEsL97EAKSe96UnqZpdhzGS8hYZ2A82FF4JCGYiX4xW4YJFGZQ3PC1JzihcYKAAoPN?cluster=devnet) | Solana devnet |
+| Approve a nine-person payroll run in two chunks | [First eight](https://explorer.solana.com/tx/56EJD3KHVV36bGZ4MAZDhiMjiJ9wL13HcH4ws78j5avg7HN4DweChg2tUsCUfbaPMjJMU6ybjx3WhnDWxiNTTP7A?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) · [Ninth](https://explorer.solana.com/tx/241VrkxaBChrefpHn4GWkbAi8RJaADi9uGy1qUpXQY7k38bPXvH3jydQpdVdamU6RSAFN4EKwDGtQcFAeCp3CBAW?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) | MagicBlock PER / TEE |
+| Make a capped private AgentPolicy payment | [Agent payment](https://explorer.solana.com/tx/36iv6JU7B2a2YSxVKpn9Z6bh4B7N7nHWmw7fPV1dBikTcc6MYTgYV21mn71C16bZD3Ebfq9UPhQqW7QjbLdXJvWz?cluster=custom&customUrl=https%3A%2F%2Fdevnet-tee.magicblock.app) | MagicBlock PER / TEE |
+| Withdraw from a recipient's private balance | [Recipient withdrawal](https://explorer.solana.com/tx/2r8fGya6fpM3xkRHkE9dXWk843BUur9vM5CLZQk6ebKUg7q6hufinfb7hJhqBoR9NKHSrHDeZvi4PdVDmZFmLMWo?cluster=devnet) | Solana devnet |
+| Buy a Founder-assigned x402 API resource with the isolated wallet | [x402 settlement](https://explorer.solana.com/tx/2qmvmhHTvR9HhVManC9GMdVJpiKTa7nm6zTwAD3XuBBz4RBXgc9TjzXp7V3QQM7bcePyHGYwgMtaYjcKRZRVW18j?cluster=devnet) | Public Solana devnet |
+
+The x402 purchase is a separate wallet payment, not a PER treasury transfer. The [PER proof catalog](docs/magicblock-per-proof-catalog.md) records 218 finalized PER signatures as of its 12 October 2026 export, and the [implementation log](docs/DEVNET_IMPLEMENTATION_LOG.md) explains the wider receipt history.
 
 ## On-chain program
 
