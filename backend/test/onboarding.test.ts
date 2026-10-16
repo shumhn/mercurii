@@ -16,7 +16,7 @@ test("company setup never writes confidential limits before PER privacy", () => 
     ["companyPermissionExists", "initCompanyPermission"],
     ["companyPrivate", "activateCompanyPrivacy"],
     ["limitsMatch", "configureLimits"],
-    ["snapshotExists", "createSnapshotShell"],
+    ["snapshotExists", "prepareBalanceTracker"],
     ["snapshotDelegated", "delegateSnapshot"],
     ["snapshotPermissionExists", "initSnapshotPermission"],
     ["snapshotPrivate", "activateSnapshotPrivacy"],
@@ -25,6 +25,22 @@ test("company setup never writes confidential limits before PER privacy", () => 
     assert.equal(nextOnboardingStep({ ...ready, [missing]: false }).operation, operation, missing);
   }
   assert.equal(nextOnboardingStep(ready).status, "ready");
+});
+
+test("fresh company privacy setup needs two wallet approvals", () => {
+  const afterCompanyCreation: OnboardingObservation = {
+    ...ready,
+    companyDelegated: false, companyVisibleOnTee: false,
+    companyPermissionExists: false, companyPrivate: false,
+    snapshotExists: false, snapshotDelegated: false, snapshotVisibleOnTee: false,
+    snapshotPermissionExists: false, snapshotPrivate: false,
+  };
+  assert.equal(nextOnboardingStep(afterCompanyCreation).operation, "preparePrivateWorkspace");
+  assert.equal(nextOnboardingStep({
+    ...afterCompanyCreation,
+    companyDelegated: true, companyVisibleOnTee: true,
+    snapshotExists: true, snapshotDelegated: true, snapshotVisibleOnTee: true,
+  }).operation, "activatePrivateWorkspace");
 });
 
 test("delegation propagation pauses instead of rebuilding or writing on base", () => {

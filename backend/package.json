@@ -10,6 +10,8 @@
     "devnet:replay": "node --experimental-strip-types scripts/devnet-replay-check.ts",
     "devnet:recipient-withdraw": "node --experimental-strip-types scripts/devnet-recipient-withdraw.ts",
     "devnet:recipient-balance": "node --experimental-strip-types scripts/devnet-recipient-balance.ts",
+    "devnet:private-payments-e2e": "node --experimental-strip-types scripts/devnet-private-payments-e2e.ts",
+    "smoke:private-payments-auth": "node --experimental-strip-types scripts/private-payments-auth-smoke.ts",
     "devnet:usdc-receive": "node --experimental-strip-types scripts/devnet-usdc-receive.ts",
     "devnet:usdc-payout": "node --experimental-strip-types scripts/devnet-usdc-payout.ts",
     "devnet:usdc-withdraw": "node --experimental-strip-types scripts/devnet-usdc-withdraw.ts",

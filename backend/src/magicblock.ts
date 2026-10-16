@@ -92,6 +92,14 @@ export function asMicroAmount(value: unknown): number {
   return value as number;
 }
 
+/** Policy caps may be zero to leave an optional spending capability disabled. */
+export function asNonnegativeMicroAmount(value: unknown): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new Error("amountMicro must be a non-negative safe integer");
+  }
+  return value as number;
+}
+
 export function assertRecipientWithdrawalBalance(amountInput: unknown, balanceInput: unknown): number {
   const amountMicro = asMicroAmount(amountInput);
   if (typeof balanceInput !== "string" || !/^\d+$/.test(balanceInput)) {
@@ -109,6 +117,32 @@ export function canonicalTokenAccount(owner: unknown, mint: unknown): string {
   return PublicKey.findProgramAddressSync(
     [ownerKey.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mintKey.toBuffer()], ASSOCIATED_TOKEN_PROGRAM_ID,
   )[0].toBase58();
+}
+
+/**
+ * MagicBlock's Payments API binds the wallet identity in front of the TEE JWT.
+ * Mercury keeps the raw TEE JWT in its session because the validator RPC and
+ * our own actor checks consume that form, then adds the binding only when a
+ * request crosses into the Payments API.
+ */
+export function privatePaymentsAuthToken(ownerInput: unknown, teeToken: string): string {
+  const owner = asAddress(ownerInput, "owner");
+  if (typeof teeToken !== "string" || teeToken.length === 0 || teeToken.length > 8_192) {
+    throw new Error("TEE auth token required");
+  }
+  const firstDot = teeToken.indexOf(".");
+  if (firstDot > 0 && teeToken.split(".").length >= 4) {
+    const identity = teeToken.slice(0, firstDot);
+    try {
+      const normalized = new PublicKey(identity).toBase58();
+      if (normalized !== owner) throw new Error("Payments token belongs to another wallet");
+      return teeToken;
+    } catch (error) {
+      if (error instanceof Error && error.message === "Payments token belongs to another wallet") throw error;
+      // A raw JWT can contain dots but does not start with a Solana address.
+    }
+  }
+  return `${owner}.${teeToken}`;
 }
 
 export async function preparePrivateReceive(args: {
@@ -275,24 +309,44 @@ export async function readRecipientBalance(args: {
   owner: unknown;
   mint: unknown;
   teeToken: string;
-  teeRpc?: string;
+  fetchImpl?: typeof fetch;
+  paymentsUrl?: string;
+  cluster?: string;
 }): Promise<{ owner: string; mint: string; tokenAccount: string; location: "ephemeral"; balanceMicro: string }> {
   const owner = new PublicKey(asAddress(args.owner, "owner"));
   if (!PublicKey.isOnCurve(owner.toBytes())) throw new Error("Recipient must be a wallet owner");
   const mint = new PublicKey(asAddress(args.mint, "mint"));
   if (!args.teeToken) throw new Error("TEE auth token required");
-  const tokenAccount = new PublicKey(canonicalTokenAccount(owner.toBase58(), mint.toBase58()));
-  const account = await teeConnection(args.teeToken, args.teeRpc).getAccountInfo(tokenAccount);
-  if (!account || !account.owner.equals(TOKEN_PROGRAM_ID) || account.data.length < 72) {
-    throw new Error("Private recipient token balance unavailable");
+  const ownerAddress = owner.toBase58();
+  const mintAddress = mint.toBase58();
+  const tokenAccount = canonicalTokenAccount(ownerAddress, mintAddress);
+  const endpoint = new URL("/v1/spl/private-balance", args.paymentsUrl ?? DEFAULT_PAYMENTS_URL);
+  endpoint.searchParams.set("address", ownerAddress);
+  endpoint.searchParams.set("mint", mintAddress);
+  endpoint.searchParams.set("cluster", args.cluster ?? "devnet-private");
+  const response = await (args.fetchImpl ?? fetch)(endpoint, {
+    headers: { authorization: `Bearer ${privatePaymentsAuthToken(ownerAddress, args.teeToken)}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  const raw = await response.text();
+  let payload: unknown;
+  try { payload = JSON.parse(raw); } catch { payload = null; }
+  if (!response.ok) {
+    const detail = typeof payload === "object" && payload !== null && "error" in payload ?
+      JSON.stringify((payload as { error: unknown }).error).slice(0, 300) : raw.slice(0, 300);
+    throw new Error(`Private recipient token balance unavailable${detail ? `: ${detail}` : ""}`);
   }
-  if (!new PublicKey(account.data.subarray(0, 32)).equals(mint) ||
-      !new PublicKey(account.data.subarray(32, 64)).equals(owner)) {
-    throw new Error("Recipient token account mint or owner mismatch");
+  if (typeof payload !== "object" || payload === null) {
+    throw new Error("Private Payments API returned an invalid balance");
+  }
+  const result = payload as Record<string, unknown>;
+  if (result.location !== "ephemeral" || result.address !== ownerAddress || result.mint !== mintAddress ||
+      result.ata !== tokenAccount || typeof result.balance !== "string" || !/^\d+$/.test(result.balance)) {
+    throw new Error("Private Payments API did not return the authenticated ephemeral balance");
   }
   return {
-    owner: owner.toBase58(), mint: mint.toBase58(), tokenAccount: tokenAccount.toBase58(),
-    location: "ephemeral", balanceMicro: account.data.readBigUInt64LE(64).toString(),
+    owner: ownerAddress, mint: mintAddress, tokenAccount,
+    location: "ephemeral", balanceMicro: result.balance,
   };
 }
 

@@ -1,5 +1,20 @@
 export type FundingReceiptStatus = "built" | "pending" | "confirmed" | "failed" | "expired" | null;
 
+export type FundingJournalEntry = {
+  target: string;
+  operation: string;
+  status: Exclude<FundingReceiptStatus, null>;
+};
+
+export function resumableFundingTarget(receipts: FundingJournalEntry[]): string | null {
+  const deposit = [...receipts].reverse().find((receipt) =>
+    receipt.operation === "privateReceive" && receipt.status === "confirmed");
+  if (!deposit) return null;
+  const completed = receipts.some((receipt) => receipt.target === deposit.target &&
+    receipt.operation === "syncTreasurySnapshot" && receipt.status === "confirmed");
+  return completed ? null : deposit.target;
+}
+
 export function nextTreasuryFundingStep(
   observedBalanceMicro: string | null,
   targetBalanceMicro: number,

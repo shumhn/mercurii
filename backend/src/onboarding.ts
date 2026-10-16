@@ -2,7 +2,7 @@ import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
 import { Connection, PublicKey } from "@solana/web3.js";
 import { permissionPdaFromAccount } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { DEVNET_USDC, asAddress, asMicroAmount, delegationStatus, teeConnection } from "./magicblock.ts";
+import { DEVNET_USDC, asAddress, asNonnegativeMicroAmount, delegationStatus, teeConnection } from "./magicblock.ts";
 import { BASE_RPC, PROGRAM_ID, TEE_RPC, snapshotAddress } from "./operations.ts";
 import { confirmedOnboardingStep } from "./onboarding-journal.ts";
 
@@ -33,14 +33,19 @@ const waitStep = (reason: string): OnboardingStep => ({ status: "wait", operatio
 
 export function nextOnboardingStep(s: OnboardingObservation): OnboardingStep {
   if (!s.companyExists) return baseStep("initializeCompany", "Create the public company shell without private limits");
+  if (!s.companyDelegated && !s.snapshotExists) return baseStep("preparePrivateWorkspace", "Prepare the company and balance tracker in one wallet approval");
   if (!s.companyDelegated) return baseStep("delegateCompany", "Delegate the company shell to the selected PER");
-  if (!s.companyVisibleOnTee) return waitStep("Wait for company state to appear on the selected PER");
+  if (!s.snapshotExists) return baseStep("prepareBalanceTracker", "Create and protect the balance tracker in one wallet approval");
+  if (!s.snapshotDelegated) return baseStep("delegateSnapshot", "Delegate the snapshot shell to the selected PER");
+  if (!s.companyVisibleOnTee || !s.snapshotVisibleOnTee) return waitStep("Wait for the private workspace to appear on the selected PER");
+  if (!s.companyPermissionExists && !s.companyPrivate && !s.snapshotPermissionExists && !s.snapshotPrivate) {
+    return teeStep("activatePrivateWorkspace", "Turn on company and balance privacy in one wallet approval");
+  }
+  if (!s.companyPermissionExists && !s.companyPrivate) return teeStep("activateCompanyAccess", "Create and activate private company access");
   if (!s.companyPermissionExists) return teeStep("initCompanyPermission", "Create the ER-local company permission");
   if (!s.companyPrivate) return teeStep("activateCompanyPrivacy", "Make company state private before storing limits");
   if (!s.limitsMatch) return teeStep("configureLimits", "Set private company spending limits");
-  if (!s.snapshotExists) return baseStep("createSnapshotShell", "Create the public balance snapshot shell");
-  if (!s.snapshotDelegated) return baseStep("delegateSnapshot", "Delegate the snapshot shell to the selected PER");
-  if (!s.snapshotVisibleOnTee) return waitStep("Wait for snapshot state to appear on the selected PER");
+  if (!s.snapshotPermissionExists && !s.snapshotPrivate) return teeStep("activateBalanceTracker", "Create and activate private balance access");
   if (!s.snapshotPermissionExists) return teeStep("initSnapshotPermission", "Create the ER-local snapshot permission");
   if (!s.snapshotPrivate) return teeStep("activateSnapshotPrivacy", "Restrict the snapshot to authorized readers");
   return { status: "ready", operation: null, sendTo: null, reason: "Company policy and snapshot are private; fund the treasury through private receive, then sync its snapshot" };
@@ -68,8 +73,8 @@ export async function inspectCompanyOnboarding(args: {
   const finance = new PublicKey(asAddress(args.finance, "finance"));
   const mint = new PublicKey(asAddress(args.mint, "mint"));
   if (!mint.equals(new PublicKey(DEVNET_USDC))) throw new Error("Onboarding currently supports Circle devnet USDC only");
-  const monthlyLimitMicro = asMicroAmount(args.monthlyLimitMicro);
-  const agentCapMicro = asMicroAmount(args.agentCapMicro);
+  const monthlyLimitMicro = asNonnegativeMicroAmount(args.monthlyLimitMicro);
+  const agentCapMicro = asNonnegativeMicroAmount(args.agentCapMicro);
   if (agentCapMicro > monthlyLimitMicro) throw new Error("Agent cap cannot exceed the company limit");
   const company = new PublicKey(asAddress(args.company, "company"));
   const derivedCompany = PublicKey.findProgramAddressSync([Buffer.from("company-policy"), founder.toBuffer()], PROGRAM_ID)[0];
@@ -102,13 +107,17 @@ export async function inspectCompanyOnboarding(args: {
   const observation: OnboardingObservation = {
     companyExists: baseCompany !== null, companyDelegated, companyVisibleOnTee: teeCompany !== null,
     companyPermissionExists: companyPermission !== null || policy?.private_ready === true ||
-      confirmedOnboardingStep(company.toBase58(), company.toBase58(), "initCompanyPermission"),
+      confirmedOnboardingStep(company.toBase58(), company.toBase58(), "initCompanyPermission") ||
+      confirmedOnboardingStep(company.toBase58(), company.toBase58(), "activateCompanyAccess") ||
+      confirmedOnboardingStep(company.toBase58(), company.toBase58(), "activatePrivateWorkspace"),
     companyPrivate: policy?.private_ready === true,
     limitsMatch: policy?.monthly_limit_micro.toString() === String(monthlyLimitMicro) &&
       policy?.agent_cap_micro.toString() === String(agentCapMicro),
     snapshotExists: baseSnapshot !== null, snapshotDelegated, snapshotVisibleOnTee: teeSnapshot !== null,
     snapshotPermissionExists: snapshotPermission !== null || snapshotData?.private_ready === true ||
-      confirmedOnboardingStep(company.toBase58(), snapshot.toBase58(), "initSnapshotPermission"),
+      confirmedOnboardingStep(company.toBase58(), snapshot.toBase58(), "initSnapshotPermission") ||
+      confirmedOnboardingStep(company.toBase58(), snapshot.toBase58(), "activateBalanceTracker") ||
+      confirmedOnboardingStep(company.toBase58(), company.toBase58(), "activatePrivateWorkspace"),
     snapshotPrivate: snapshotData?.private_ready === true,
   };
   return { companyAddress: company.toBase58(), snapshotAddress: snapshot.toBase58(), observation, next: nextOnboardingStep(observation) };

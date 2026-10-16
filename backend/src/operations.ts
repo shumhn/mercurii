@@ -1,12 +1,12 @@
 import { readFileSync } from "node:fs";
 import * as anchor from "@coral-xyz/anchor";
 import BN from "bn.js";
-import { Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
+import { ComputeBudgetProgram, Connection, PublicKey, SystemProgram, Transaction } from "@solana/web3.js";
 import {
   EPHEMERAL_VAULT_ID, MAGIC_PROGRAM_ID, PERMISSION_PROGRAM_ID,
   permissionPdaFromAccount,
 } from "@magicblock-labs/ephemeral-rollups-sdk";
-import { DEVNET_USDC, asAddress, asMicroAmount, canonicalTokenAccount, teeConnection } from "./magicblock.ts";
+import { DEVNET_USDC, asAddress, asMicroAmount, asNonnegativeMicroAmount, canonicalTokenAccount, teeConnection } from "./magicblock.ts";
 
 const idl = JSON.parse(readFileSync(new URL("../idl/mercury.json", import.meta.url), "utf8")) as anchor.Idl;
 export const PROGRAM_ID = new PublicKey(idl.address);
@@ -239,6 +239,7 @@ function aclAccounts(account: PublicKey): Record<string, PublicKey> {
 }
 
 const privateOperations = new Set([
+  "activatePrivateWorkspace", "activateCompanyAccess", "activateBalanceTracker",
   "initCompanyPermission", "activateCompanyPrivacy", "configureLimits",
   "initRequestPermission", "activateRequestPrivacy", "submitPayment", "approvePayment", "rejectPayment", "executePayment",
   "initAgentPermission", "activateAgentPrivacy", "removeFinanceAgentReader", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
@@ -287,6 +288,33 @@ export async function buildOperation(input: BuildInput, config: {
       }).transaction();
       break;
     }
+    case "preparePrivateWorkspace": {
+      const snapshot = snapshotAddress(company);
+      const delegatePolicy = await program.methods.delegatePolicy().accountsPartial({
+        founder: actor, policy: company, validator: TEE_VALIDATOR,
+      }).instruction();
+      const createSnapshot = await program.methods.createSnapshotShell(company).accountsPartial({
+        founder: actor, snapshot, systemProgram: SystemProgram.programId,
+      }).instruction();
+      const delegateSnapshot = await program.methods.delegateSnapshot(company).accountsPartial({
+        founder: actor, snapshot, validator: TEE_VALIDATOR,
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }),
+        delegatePolicy, createSnapshot, delegateSnapshot);
+      break;
+    }
+    case "prepareBalanceTracker": {
+      const snapshot = snapshotAddress(company);
+      const createSnapshot = await program.methods.createSnapshotShell(company).accountsPartial({
+        founder: actor, snapshot, systemProgram: SystemProgram.programId,
+      }).instruction();
+      const delegateSnapshot = await program.methods.delegateSnapshot(company).accountsPartial({
+        founder: actor, snapshot, validator: TEE_VALIDATOR,
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 900_000 }),
+        createSnapshot, delegateSnapshot);
+      break;
+    }
     case "delegateSnapshot": {
       const snapshot = snapshotAddress(company);
       tx = await program.methods.delegateSnapshot(company).accountsPartial({ founder: actor, snapshot, validator: TEE_VALIDATOR }).transaction();
@@ -301,6 +329,45 @@ export async function buildOperation(input: BuildInput, config: {
       const snapshot = snapshotAddress(company);
       tx = await program.methods.activateSnapshotPrivacy(input.includeFinance !== false)
         .accountsPartial({ founder: actor, policy: company, snapshot, ...aclAccounts(snapshot) }).transaction();
+      break;
+    }
+    case "activatePrivateWorkspace": {
+      const snapshot = snapshotAddress(company);
+      const initCompany = await program.methods.initPermission().accountsPartial({
+        founder: actor, policy: company, ...aclAccounts(company),
+      }).instruction();
+      const protectCompany = await program.methods.activatePrivacy().accountsPartial({
+        founder: actor, policy: company, ...aclAccounts(company),
+      }).instruction();
+      const initSnapshot = await program.methods.initSnapshotPermission().accountsPartial({
+        founder: actor, snapshot, ...aclAccounts(snapshot),
+      }).instruction();
+      const protectSnapshot = await program.methods.activateSnapshotPrivacy(input.includeFinance !== false)
+        .accountsPartial({ founder: actor, policy: company, snapshot, ...aclAccounts(snapshot) }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }),
+        initCompany, protectCompany, initSnapshot, protectSnapshot);
+      break;
+    }
+    case "activateCompanyAccess": {
+      const initCompany = await program.methods.initPermission().accountsPartial({
+        founder: actor, policy: company, ...aclAccounts(company),
+      }).instruction();
+      const protectCompany = await program.methods.activatePrivacy().accountsPartial({
+        founder: actor, policy: company, ...aclAccounts(company),
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 700_000 }),
+        initCompany, protectCompany);
+      break;
+    }
+    case "activateBalanceTracker": {
+      const snapshot = snapshotAddress(company);
+      const initSnapshot = await program.methods.initSnapshotPermission().accountsPartial({
+        founder: actor, snapshot, ...aclAccounts(snapshot),
+      }).instruction();
+      const protectSnapshot = await program.methods.activateSnapshotPrivacy(input.includeFinance !== false)
+        .accountsPartial({ founder: actor, policy: company, snapshot, ...aclAccounts(snapshot) }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 700_000 }),
+        initSnapshot, protectSnapshot);
       break;
     }
     case "setSnapshotReaders": {
@@ -329,7 +396,7 @@ export async function buildOperation(input: BuildInput, config: {
       tx = await program.methods.activatePrivacy().accountsPartial({ founder: actor, policy: company, ...aclAccounts(company) }).transaction();
       break;
     case "configureLimits":
-      tx = await program.methods.configureLimits(positiveMicro(input.monthlyLimitMicro), positiveMicro(input.agentCapMicro))
+      tx = await program.methods.configureLimits(positiveMicro(input.monthlyLimitMicro), new BN(asNonnegativeMicroAmount(input.agentCapMicro)))
         .accountsPartial({ founder: actor, policy: company }).transaction();
       break;
     case "createGrantShell": {

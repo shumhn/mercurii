@@ -25,7 +25,7 @@ import { confirmOnboardingReceipt as confirmLocalOnboardingReceipt,
 import { nextRecipientOnboarding } from "./recipient-onboarding.ts";
 import { inspectAgentOnboarding } from "./agent-onboarding.ts";
 import { listVisibleAgentPolicies } from "./agent-directory.ts";
-import { nextTreasuryFundingStep } from "./treasury-funding.ts";
+import { nextTreasuryFundingStep, resumableFundingTarget } from "./treasury-funding.ts";
 import { scanFinanceReaderCleanup } from "./finance-cleanup.ts";
 import { scanManagerReaderCleanup } from "./manager-cleanup.ts";
 import { scanMemberReaderCleanup } from "./member-cleanup.ts";
@@ -604,7 +604,8 @@ createServer(async (req, res) => {
       const transaction = await buildOperation(input as { operation: string; actor: string }, {
         company: companyAddress, founder: founderAddress, teeToken: token,
       });
-      const target = result.next.operation?.includes("Snapshot") ? result.snapshotAddress : companyAddress;
+      const target = result.next.operation?.includes("Snapshot") || result.next.operation?.includes("BalanceTracker")
+        ? result.snapshotAddress : companyAddress;
       const receipt = await recordOnboardingBuild({
         company: companyAddress, target, operation: result.next.operation!,
         chain: transaction.sendTo, transactionBase64: transaction.transactionBase64,
@@ -847,6 +848,38 @@ createServer(async (req, res) => {
         target: result.agentPolicyAddress, operation, chain: transaction.sendTo,
         transactionBase64: transaction.transactionBase64 });
       return reply(res, 200, { ...result, transaction, receiptId: receipt.id });
+    }
+    if ((req.method === "GET" || req.method === "POST") && routePath === "/v1/onboarding/company-funding/resume") {
+      if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || companyContext.mint !== DEVNET_USDC) {
+        return reply(res, 503, { error: "Treasury funding requires the verified Circle devnet USDC receive flow" });
+      }
+      const token = req.headers.authorization?.match(/^Bearer (.+)$/)?.[1];
+      if (!token) throw new Error("Founder TEE auth token required");
+      assertTeeTokenActor(token, founderAddress);
+      const journal = listOnboardingReceipts(companyAddress);
+      const target = resumableFundingTarget(journal);
+      if (!target) return reply(res, 200, { status: "ready", receiptId: null, transaction: null });
+      let prior = latestOnboardingReceipt(companyAddress, target, "syncTreasurySnapshot");
+      if (prior?.status === "pending") prior = await reconcileOnboardingReceipt(prior.id, companyAddress, token);
+      if (prior?.status === "confirmed") {
+        return reply(res, 200, { status: "ready", receiptId: prior.id, transaction: null });
+      }
+      if (req.method === "GET") {
+        return reply(res, 200, { status: prior?.status === "built" || prior?.status === "pending"
+          ? "wait_for_receipt" : "resume_snapshot_sync",
+          receiptId: prior?.id ?? null, transaction: null });
+      }
+      if (prior?.status === "built") prior = await expireUnsignedOnboardingReceipt(prior.id, companyAddress, token);
+      if (prior && (prior.status === "built" || prior.status === "pending")) {
+        return reply(res, 200, { status: "wait_for_receipt", receiptId: prior.id, transaction: null });
+      }
+      const transaction = await buildOperation({ operation: "syncTreasurySnapshot", actor: founderAddress,
+        treasuryToken: canonicalTokenAccount(companyAddress, DEVNET_USDC),
+      }, { company: companyAddress, founder: founderAddress, teeToken: token });
+      const receipt = await recordOnboardingBuild({ company: companyAddress, target,
+        operation: "syncTreasurySnapshot", chain: transaction.sendTo,
+        transactionBase64: transaction.transactionBase64 });
+      return reply(res, 200, { status: "build_snapshot_sync", receiptId: receipt.id, transaction });
     }
     if (req.method === "POST" && routePath === "/v1/onboarding/company-funding/next") {
       if (process.env.MERCURY_ENABLE_EXPERIMENTAL_RECEIVE !== "1" || companyContext.mint !== DEVNET_USDC) {

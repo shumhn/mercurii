@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Keypair, PublicKey } from "@solana/web3.js";
-import { assertRecipientWithdrawalBalance, preparePrivateReceive, prepareRecipientOnboarding,
-  prepareRecipientWithdrawal } from "../src/magicblock.ts";
+import { asNonnegativeMicroAmount, assertRecipientWithdrawalBalance, canonicalTokenAccount, preparePrivateReceive,
+  prepareRecipientOnboarding, prepareRecipientWithdrawal, readRecipientBalance } from "../src/magicblock.ts";
 import { agentPaymentAccounts, paymentExecutionAccounts, paymentStatusFromRequest } from "../src/operations.ts";
 
 test("private receive builder fixes the route and leaves payer signing to the client", async () => {
@@ -233,4 +233,10 @@ test("recipient withdrawal cannot exceed the authenticated private balance", () 
     /exceeds the private recipient balance/);
   assert.throws(() => assertRecipientWithdrawalBalance(1, "not-a-balance"),
     /balance is invalid/);
+});
+
+test("optional policy caps can stay disabled without blocking privacy setup", () => {
+  assert.equal(asNonnegativeMicroAmount(0), 0);
+  assert.equal(asNonnegativeMicroAmount(5_000_000), 5_000_000);
+  assert.throws(() => asNonnegativeMicroAmount(-1), /non-negative safe integer/);
 });
