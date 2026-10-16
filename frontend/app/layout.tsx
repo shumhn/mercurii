@@ -30,7 +30,7 @@ const switzer = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Mercurii — Private stablecoin operations for teams",
+  title: "Mercurii Private Finance",
   description:
     "A private company operating account for receiving, holding, approving, paying, and reconciling stablecoins with controlled team and AI-agent access.",
   icons: {
