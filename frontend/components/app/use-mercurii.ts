@@ -4,6 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AccessRole, type CompanyPolicy, type Payee, type PaymentRow, type RecipientBalance,
   type PayrollRun, type PayrollSchedule, type TeamMember, type TreasurySnapshot, roleFromGrant } from "@/lib/mercurii-client";
 import { signMessage, type BrowserWallet } from "@/lib/mercurii-wallet";
+import { cachePrivateSession, clearCachedPrivateSession, readCachedPrivateSession,
+  type CachedPrivateSession } from "@/lib/mercurii-session";
 
 export type Resource<T> = { state: "idle" | "loading" | "ready" | "error"; value: T | null; error: string | null };
 const idle = <T,>(): Resource<T> => ({ state: "idle", value: null, error: null });
@@ -22,6 +24,8 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
   // Keep the initial server and browser render identical. The remembered address
   // is restored after hydration, otherwise Next's instant navigation can fail.
   const [company, setCompanyState] = useState("");
+  const [storageReady, setStorageReady] = useState(false);
+  const [restorableSession, setRestorableSession] = useState<CachedPrivateSession | null>(null);
   const setCompany = useCallback((value: string) => {
     setCompanyState(value);
     try {
@@ -50,7 +54,16 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
   const intentionalDisconnectRef = useRef(false);
 
   useEffect(() => {
-    try { setCompanyState(window.localStorage.getItem(COMPANY_STORAGE_KEY) ?? ""); } catch { /* Storage unavailable. */ }
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const cached = readCachedPrivateSession(window.sessionStorage);
+        const rememberedCompany = cached?.company ?? window.localStorage.getItem(COMPANY_STORAGE_KEY) ?? "";
+        setCompanyState(rememberedCompany);
+        setRestorableSession(cached);
+      } catch { /* Storage unavailable. */ }
+      setStorageReady(true);
+    });
+    return () => window.cancelAnimationFrame(frame);
   }, []);
 
   const clearPrivateData = useCallback(() => {
@@ -64,9 +77,20 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
     walletRef.current = null;
     setWallet(null);
     setSession(null);
+    setRestorableSession(null);
+    if (typeof window !== "undefined") clearCachedPrivateSession(window.sessionStorage);
     clearPrivateData();
     onClearPrivateDraft?.();
   }, [clearPrivateData, onClearPrivateDraft]);
+
+  const rememberSession = useCallback((value: Session) => {
+    const cached: CachedPrivateSession = {
+      address: value.address, company: value.company, token: value.token,
+      expiresAt: value.expiresAt, role: value.role, grantAddress: value.grantAddress,
+    };
+    try { cachePrivateSession(window.sessionStorage, cached); } catch { /* Session remains in memory. */ }
+    setRestorableSession(cached);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -121,7 +145,9 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
       const value = await task;
       if (generationRef.current === generation) setter({ state: "ready", value, error: null });
     } catch (cause) {
-      if (generationRef.current === generation) setter({ state: "error", value: null,
+      // Keep the last verified private value during a transient RPC failure.
+      // Navigation must not regress into onboarding because one refresh failed.
+      if (generationRef.current === generation) setter({ state: "error", value: previous.value,
         error: cause instanceof Error ? cause.message : "Could not load private data" });
     }
   }, []);
@@ -212,6 +238,7 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
       walletRef.current = wallet;
       setWallet(wallet);
       setSession(next);
+      rememberSession(next);
       setBackendStatus("online");
       if (privatePolicy) setPolicy({ state: "ready", value: privatePolicy, error: null });
       if (teamResult.status === "fulfilled") setMembers({ state: "ready", value: privateMembers, error: null });
@@ -219,7 +246,38 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
     } catch (cause) {
       if (generationRef.current === generation) setConnectionError(cause instanceof Error ? cause.message : "Wallet login failed");
     } finally { setConnecting(false); }
-  }, [clearPrivateData, company, refresh, setCompany]);
+  }, [clearPrivateData, company, refresh, rememberSession, setCompany]);
+
+  const restore = useCallback(async (candidateWallet: BrowserWallet): Promise<boolean> => {
+    const cached = typeof window === "undefined" ? null : readCachedPrivateSession(window.sessionStorage);
+    if (!cached || candidateWallet.publicKey?.toBase58() !== cached.address) return false;
+    const generation = ++generationRef.current;
+    clearPrivateData();
+    setConnecting(true);
+    setConnectionError(null);
+    try {
+      await api<{ founder: string }>(`/v1/company-context?actor=${encodeURIComponent(cached.address)}`, {
+        company: cached.company, token: cached.token,
+      });
+      if (generationRef.current !== generation || candidateWallet.publicKey?.toBase58() !== cached.address) return false;
+      const next: Session = { ...cached, policy: null, members: [] };
+      setCompany(cached.company);
+      walletRef.current = candidateWallet;
+      setWallet(candidateWallet);
+      setSession(next);
+      setBackendStatus("online");
+      rememberSession(next);
+      void refresh(next);
+      return true;
+    } catch {
+      if (generationRef.current === generation) {
+        clearCachedPrivateSession(window.sessionStorage);
+        setRestorableSession(null);
+        setConnectionError("Your private session expired. Open the saved company with your wallet to continue.");
+      }
+      return false;
+    } finally { setConnecting(false); }
+  }, [clearPrivateData, refresh, rememberSession, setCompany]);
 
   const disconnect = useCallback(async () => {
     const previous = walletRef.current;
@@ -242,9 +300,9 @@ export function useMercurii(onClearPrivateDraft?: () => void) {
     return api<T>(path, { company: session.company, token: session.token, body, method });
   }, [clearSession, session]);
 
-  return { company, setCompany, session, wallet, connecting, connectionError,
+  return { company, setCompany, session, wallet, connecting, connectionError, storageReady, restorableSession,
     backendStatus, programId, capabilities, connect, disconnect, refresh: () => session ? refresh(session) : Promise.resolve(),
-    request, policy, snapshot, recipientBalance, members, payments, payees, payrollRuns, payrollSchedules, audits };
+    restore, request, policy, snapshot, recipientBalance, members, payments, payees, payrollRuns, payrollSchedules, audits };
 }
 
 export type MercuriiController = ReturnType<typeof useMercurii>;

@@ -79,6 +79,35 @@ export function parseUsdc(value: string): number {
   return Number(micro);
 }
 
+export function setupPolicyLimits(input: {
+  editing: boolean;
+  monthlyLimit: string;
+  agentCap: string;
+  current?: Pick<CompanyPolicy, "monthlyLimitMicro" | "agentCapMicro"> | null;
+}): { monthlyLimitMicro: number; agentCapMicro: number } {
+  if (input.editing) return {
+    monthlyLimitMicro: parseUsdc(input.monthlyLimit),
+    agentCapMicro: input.agentCap.trim() ? parseUsdc(input.agentCap) : 0,
+  };
+  return {
+    monthlyLimitMicro: input.current ? Number(input.current.monthlyLimitMicro) : 0,
+    agentCapMicro: input.current ? Number(input.current.agentCapMicro) : 0,
+  };
+}
+
+export function founderNeedsPrivateSetup(input: {
+  role: AccessRole | undefined;
+  sessionKey: string;
+  completedSession: string;
+  policyState: "idle" | "loading" | "ready" | "error";
+  snapshotState: "idle" | "loading" | "ready" | "error";
+}): boolean {
+  const liveReady = input.policyState === "ready" && input.snapshotState === "ready";
+  return input.role === "founder" && input.completedSession !== input.sessionKey && !liveReady &&
+    (input.policyState === "error" ||
+      (input.policyState === "ready" && input.snapshotState === "error"));
+}
+
 export function shortAddress(address: string | null | undefined): string {
   return address ? `${address.slice(0, 5)}…${address.slice(-5)}` : "—";
 }

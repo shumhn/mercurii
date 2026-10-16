@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PublicKey } from "@solana/web3.js";
 import { ArrowRight, Check, LoaderCircle, ShieldCheck } from "lucide-react";
-import { formatUsdc, parseUsdc } from "@/lib/mercurii-client";
+import { formatUsdc, setupPolicyLimits } from "@/lib/mercurii-client";
 import { signPrepared, type PreparedTransaction } from "@/lib/mercurii-wallet";
 import type { MercuriiController } from "./use-mercurii";
 import { buttonClass, cardClass, inputClass, secondaryButtonClass } from "./mercurii-app";
@@ -18,7 +18,7 @@ type SetupStep = { next: { status: "build" | "wait" | "ready"; operation: string
   reason: string; sendTo: "base" | "ephemeral" | null }; transaction?: PreparedTransaction;
   receiptId?: string; snapshotAddress?: string };
 
-type StoredTerms = { finance: string; monthlyLimit: string; agentCap: string };
+type StoredTerms = { finance: string; monthlyLimit: string; agentCap: string; configureLimits?: boolean };
 
 function positiveAmount(value: string | undefined): string | null {
   if (!value) return null;
@@ -27,19 +27,17 @@ function positiveAmount(value: string | undefined): string | null {
 }
 
 /** The public company shell is created before this screen. This guided view
- * intentionally groups the remaining low-level operations into three founder
+ * intentionally groups the remaining low-level operations into two founder
  * outcomes, so someone can finish setup without learning PER terminology. */
 const SETUP_PHASES = [
-  { title: "Connect your company privately", short: "Private network",
-    description: "Move the company account to MagicBlock's private network.",
-    operations: ["delegateCompany"], waiting: "Waiting for the private network to pick up the company — this takes a few seconds." },
-  { title: "Protect company operations", short: "Privacy & rules",
-    description: "Lock access, turn on privacy, and save your spending rules.",
-    operations: ["initCompanyPermission", "activateCompanyPrivacy", "configureLimits"], waiting: null },
-  { title: "Verify your private balance", short: "Balance tracker",
-    description: "Create a private balance tracker before you fund the treasury.",
-    operations: ["createSnapshotShell", "delegateSnapshot", "initSnapshotPermission", "activateSnapshotPrivacy"],
-    waiting: "Waiting for the private network to pick up the balance tracker — this takes a few seconds." },
+  { title: "Prepare your workspace", short: "Workspace",
+    description: "Prepare the company and its balance tracker together.",
+    operations: ["preparePrivateWorkspace", "delegateCompany", "prepareBalanceTracker", "createSnapshotShell", "delegateSnapshot"],
+    waiting: "Preparing your workspace — this takes a few seconds." },
+  { title: "Turn on privacy", short: "Privacy",
+    description: "Protect company records and balances for approved wallets.",
+    operations: ["activatePrivateWorkspace", "activateCompanyAccess", "initCompanyPermission", "activateCompanyPrivacy", "activateBalanceTracker", "initSnapshotPermission", "activateSnapshotPrivacy", "configureLimits"],
+    waiting: null },
 ] as const;
 
 function phaseOfOperation(operation: string | null | undefined): number {
@@ -51,6 +49,11 @@ function humanStepTitle(operation: string | null | undefined): string {
   const titles: Record<string, string> = {
     initializeCompany: "Create the company account",
     delegateCompany: "Move the company to the private network",
+    preparePrivateWorkspace: "Prepare the private workspace",
+    prepareBalanceTracker: "Prepare the balance tracker",
+    activatePrivateWorkspace: "Turn on workspace privacy",
+    activateCompanyAccess: "Turn on company privacy",
+    activateBalanceTracker: "Turn on balance privacy",
     initCompanyPermission: "Create private company permissions",
     activateCompanyPrivacy: "Turn on company privacy",
     configureLimits: "Set spending limits",
@@ -65,6 +68,11 @@ function humanStepTitle(operation: string | null | undefined): string {
 function signingLabel(operation: string | null | undefined): string {
   const labels: Record<string, string> = {
     delegateCompany: "Continue in your wallet",
+    preparePrivateWorkspace: "Approve 1 of 2: prepare workspace",
+    prepareBalanceTracker: "Approve balance setup",
+    activatePrivateWorkspace: "Approve 2 of 2: turn on privacy",
+    activateCompanyAccess: "Approve company privacy",
+    activateBalanceTracker: "Approve balance privacy",
     initCompanyPermission: "Create private access rules",
     activateCompanyPrivacy: "Turn on company privacy",
     configureLimits: "Save spending limits",
@@ -135,13 +143,14 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
   const [receipt, setReceipt] = useState<ReceiptState | null>(() => readStoredReceipt(termsKey));
   const [proofs, setProofs] = useState<StepProof[]>(() => readStoredProofs(termsKey));
   const [phaseIdx, setPhaseIdx] = useState(0);
+  const [editingLimits, setEditingLimits] = useState(storedTerms?.configureLimits === true);
   const [busy, setBusy] = useState(false); const [error, setError] = useState(""); const [message, setMessage] = useState("");
 
   useEffect(() => {
     if (!termsKey) return;
-    try { window.localStorage.setItem(`mercurii.setup.${termsKey}`, JSON.stringify({ finance, monthlyLimit, agentCap })); }
+    try { window.localStorage.setItem(`mercurii.setup.${termsKey}`, JSON.stringify({ finance, monthlyLimit, agentCap, configureLimits: editingLimits })); }
     catch { /* Storage unavailable; terms stay in memory. */ }
-  }, [termsKey, finance, monthlyLimit, agentCap]);
+  }, [termsKey, finance, monthlyLimit, agentCap, editingLimits]);
 
   useEffect(() => {
     if (!termsKey) return;
@@ -164,13 +173,20 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
   const autoResumed = useRef(false);
   useEffect(() => {
     if (autoResumed.current || receipt || app.session?.role !== "founder") return;
+    // `refresh()` loads these resources immediately after the session is
+    // restored. Do not inspect onboarding with temporary zero values while a
+    // completed company's private policy is still arriving.
+    if (["idle", "loading"].includes(app.policy.state) || ["idle", "loading"].includes(app.snapshot.state)) return;
+    if (app.policy.state === "ready" && app.snapshot.state === "ready") {
+      autoResumed.current = true;
+      return;
+    }
     try { if (new PublicKey(finance).toBase58() !== finance) return; }
     catch { return; }
-    if (!monthlyLimit || !agentCap) return;
     autoResumed.current = true;
     void action(prepare);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [app.session]);
+  }, [app.session, app.policy.state, app.snapshot.state]);
 
   function changeTerms(update: () => void) {
     if (receipt && receipt.status !== "confirmed") {
@@ -195,7 +211,11 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
     if (nextPhase >= 0) setPhaseIdx(nextPhase);
     setReceipt((prior) => prior?.status === "confirmed" && result.receiptId !== prior.id ? null : prior);
     setMessage(result.next.reason);
-    if (result.next.status === "ready") { setPhaseIdx(SETUP_PHASES.length); await app.refresh(); }
+    if (result.next.status === "ready") {
+      setPhaseIdx(SETUP_PHASES.length);
+      setEditingLimits(false);
+      await app.refresh();
+    }
   }
 
   /** After a step confirms, the next-state read can hit a transient RPC
@@ -222,9 +242,19 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
   function setupInput(): Record<string, unknown> {
     try { if (new PublicKey(finance).toBase58() !== finance) throw new Error(); }
     catch { throw new Error("The company administrator wallet is invalid"); }
-    const monthlyLimitMicro = parseUsdc(monthlyLimit);
-    const agentCapMicro = parseUsdc(agentCap);
-    if (agentCapMicro > monthlyLimitMicro) throw new Error("Agent cap must fit within the monthly company limit");
+    // Resuming privacy must preserve an already-written spending policy. Zero
+    // is used only for a genuinely new policy that has never been readable.
+    const { monthlyLimitMicro, agentCapMicro } = setupPolicyLimits({
+      editing: editingLimits, monthlyLimit, agentCap, current: app.policy.value,
+    });
+    if (agentCapMicro > monthlyLimitMicro) throw new Error("The AI-agent cap must be at or below the company 30-day cap");
+    const currentPeriod = BigInt(Math.floor(Date.now() / 1000 / (30 * 24 * 60 * 60)));
+    if (app.policy.value && BigInt(app.policy.value.period) === currentPeriod) {
+      const alreadyCommitted = BigInt(app.policy.value.spentMicro) + BigInt(app.policy.value.reservedMicro);
+      if (BigInt(monthlyLimitMicro) < alreadyCommitted) {
+        throw new Error(`The company has already spent or reserved ${formatUsdc(alreadyCommitted.toString())} in this 30-day period. Choose a cap at or above that amount.`);
+      }
+    }
     return { actor: app.session!.address, finance, monthlyLimitMicro, agentCapMicro };
   }
 
@@ -335,41 +365,48 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
     setMessage(`Original signature: ${result.receipt.status} · broadcast ${result.broadcast}. Checking automatically — this continues on its own.`);
   }
 
-  const setupReady = step?.next.status === "ready";
+  const setupReady = !editingLimits && (step?.next.status === "ready" ||
+    (app.policy.state === "ready" && app.snapshot.state === "ready"));
+  const spendingPolicySet = Boolean(app.policy.value && app.policy.value.monthlyLimitMicro !== "0");
   const currentPhase = setupReady ? SETUP_PHASES.length : phaseIdx;
   const controlsLocked = Boolean(receipt && receipt.status !== "confirmed");
 
   return <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_350px]">
     <section className={`${cardClass} p-5 sm:p-7`}>
-      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-brand">Founder checklist</p>
-        <h2 className="mt-2 text-2xl font-semibold tracking-tight">Finish private company setup</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-6 text-app-muted">Three outcomes remain before your company can receive private USDC. Mercurii handles the network steps; you only approve the requested wallet signature.</p></div>
+      <div className="flex flex-wrap items-start justify-between gap-4"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-brand">Owner checklist</p>
+        <h2 className="mt-2 text-2xl font-semibold tracking-tight">Set up company privacy</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-app-muted">{editingLimits
+          ? "One wallet approval updates the company's private spending policy."
+          : "Two wallet approvals prepare the private company workspace and its balance."}</p></div>
         <span className="rounded-full bg-app-canvas px-3 py-1.5 text-xs font-semibold text-app-muted">{setupReady ? "Setup complete" : `Step ${Math.min(currentPhase + 1, SETUP_PHASES.length)} of ${SETUP_PHASES.length}`}</span></div>
 
       <ol aria-label="Private company setup progress" className="mt-7 grid gap-3 md:grid-cols-3">{SETUP_PHASES.map((phase, index) => {
         const done = setupReady || index < currentPhase;
         const current = !setupReady && index === currentPhase;
-        return <li key={phase.short} className={`rounded-xl border p-4 ${done ? "border-emerald-200 bg-emerald-50" : current ? "border-brand/30 bg-brand/[.035]" : "border-app-line bg-white"}`}>
-          <div className="flex items-center gap-2"><span className={`grid size-6 place-items-center rounded-full text-xs font-bold ${done ? "bg-emerald-600 text-white" : current ? "bg-brand text-white" : "bg-app-canvas text-app-muted"}`}>
-            {done ? <Check className="size-3.5" aria-hidden /> : index + 1}</span><p className={`text-sm font-semibold ${done ? "text-emerald-900" : current ? "text-foreground" : "text-app-muted"}`}>{phase.title}</p></div>
+        return <li key={phase.short} className={`rounded-xl border p-4 ${done ? "border-brand/25 bg-brand/[.05]" : current ? "border-brand/30 bg-brand/[.035]" : "border-app-line bg-white"}`}>
+          <div className="flex items-center gap-2"><span className={`grid size-6 place-items-center rounded-full text-xs font-bold ${done ? "bg-brand text-white" : current ? "bg-brand text-white" : "bg-app-canvas text-app-muted"}`}>
+            {done ? <Check className="size-3.5" aria-hidden /> : index + 1}</span><p className={`text-sm font-semibold ${done ? "text-foreground" : current ? "text-foreground" : "text-app-muted"}`}>{phase.title}</p></div>
           <p className="mt-2 text-xs leading-5 text-app-muted">{phase.description}</p>
           {current && waiting && <p className="mt-3 flex items-center gap-1.5 text-xs font-semibold text-brand"><LoaderCircle className="size-3.5 animate-spin motion-reduce:animate-none" aria-hidden />Confirming on the private network…</p>}
         </li>;
       })}</ol>
 
-      {app.session?.role !== "founder" ? <p className="mt-6 rounded-xl bg-app-canvas p-4 text-sm text-app-muted">Only the registered Founder can complete company setup.</p> : <>
-        {!setupReady && !step && <form className="mt-7 rounded-2xl border border-app-line bg-app-canvas p-5" onSubmit={(event) => { event.preventDefault(); void action(prepare); }}>
-          <div><h3 className="font-semibold">Company rules</h3><p className="mt-1 text-sm leading-6 text-app-muted">Set the private company spending rules. Your Founder wallet remains the administrator throughout setup.</p></div>
-          <div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium" htmlFor="setup-monthly-limit">Monthly limit (USDC)
-              <input id="setup-monthly-limit" className={`${inputClass} mt-2`} value={monthlyLimit} disabled={controlsLocked || busy} onChange={(e) => changeTerms(() => setMonthlyLimit(e.target.value))} inputMode="decimal" autoComplete="off" /></label>
-            <label className="text-sm font-medium" htmlFor="setup-agent-cap">AI-agent cap (USDC)
-              <input id="setup-agent-cap" className={`${inputClass} mt-2`} value={agentCap} disabled={controlsLocked || busy} onChange={(e) => changeTerms(() => setAgentCap(e.target.value))} inputMode="decimal" autoComplete="off" /></label></div>
-          {!step && <button type="submit" className={`${buttonClass} mt-5`} disabled={busy || controlsLocked}>{busy ? <><LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden />Checking setup…</> : <>Begin private setup<ArrowRight className="size-4" aria-hidden /></>}</button>}
+      {app.session?.role !== "founder" ? <p className="mt-6 rounded-xl bg-app-canvas p-4 text-sm text-app-muted">Only the company owner can complete this setup.</p> : <>
+        {((!setupReady && !step) || editingLimits) && <form className="mt-7 rounded-2xl border border-app-line bg-app-canvas p-5" onSubmit={(event) => { event.preventDefault(); void action(prepare); }}>
+          {editingLimits ? <><div><h3 className="font-semibold">Set a spending policy</h3><p className="mt-1 text-sm leading-6 text-app-muted">Choose safety ceilings before your company sends its first payment. These numbers do not move or reserve USDC.</p></div>
+          <div className="mt-5 grid gap-4 sm:grid-cols-2"><label className="text-sm font-medium" htmlFor="setup-monthly-limit">Company 30-day cap (USDC)
+              <input id="setup-monthly-limit" className={`${inputClass} mt-2`} value={monthlyLimit} placeholder="For example, 5000" disabled={controlsLocked || busy} onChange={(e) => changeTerms(() => setMonthlyLimit(e.target.value))} inputMode="decimal" autoComplete="off" /></label>
+            <label className="text-sm font-medium" htmlFor="setup-agent-cap">AI-agent 30-day cap <span className="font-normal text-app-muted">(optional)</span>
+              <input id="setup-agent-cap" className={`${inputClass} mt-2`} value={agentCap} placeholder="Leave blank to keep agents off" disabled={controlsLocked || busy} onChange={(e) => changeTerms(() => setAgentCap(e.target.value))} inputMode="decimal" autoComplete="off" />
+              <span className="mt-2 block text-xs font-normal leading-5 text-app-muted">Only needed if you later allow an AI agent to make bounded payments.</span></label></div></> :
+            <div><h3 className="font-semibold">Prepare your private workspace</h3><p className="mt-1 max-w-2xl text-sm leading-6 text-app-muted">This step protects company records and prepares the private balance. You can add funds next and choose a spending policy before the first outgoing payment.</p></div>}
+          <button type="submit" className={`${buttonClass} mt-5`} disabled={busy || controlsLocked}>{busy ? <><LoaderCircle className="size-4 animate-spin motion-reduce:animate-none" aria-hidden />Checking setup…</> : <>{editingLimits ? "Review spending policy" : "Start privacy setup"}<ArrowRight className="size-4" aria-hidden /></>}</button>
         </form>}
 
-        {setupReady && <div className="mt-7 rounded-2xl border border-emerald-200 bg-emerald-50 p-5 sm:p-6"><div className="flex gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-emerald-600 text-white"><Check className="size-5" aria-hidden /></span><div><p className="font-semibold text-emerald-950">Your private company account is ready.</p>
-            <p className="mt-1 text-sm leading-6 text-emerald-900">Company rules and the balance tracker are active. Your next task is to fund the private treasury with USDC.</p>
-            <button className={`${buttonClass} mt-4 bg-emerald-700 hover:bg-emerald-800 focus-visible:outline-emerald-700`} onClick={onComplete}>Fund private treasury<ArrowRight className="size-4" aria-hidden /></button></div></div></div>}
+        {setupReady && !editingLimits && <div className="mt-7 rounded-2xl border border-brand/25 bg-brand/[.05] p-5 sm:p-6"><div className="flex gap-3"><span className="grid size-10 shrink-0 place-items-center rounded-xl bg-brand text-white"><Check className="size-5" aria-hidden /></span><div><p className="font-semibold text-foreground">Your private workspace is ready.</p>
+            <p className="mt-1 text-sm leading-6 text-app-muted">Add company funds now. Set a spending policy before the first outgoing payment.</p>
+            <div className="mt-4 flex flex-wrap gap-2"><button type="button" className={buttonClass} onClick={onComplete}>Add company funds<ArrowRight className="size-4" aria-hidden /></button>
+              <button className={secondaryButtonClass} onClick={() => { setEditingLimits(true); setMessage(""); }}>{spendingPolicySet ? "Change spending policy" : "Set spending policy"}</button></div></div></div></div>}
 
         {step && !setupReady && <section aria-live="polite" className="mt-5 rounded-2xl border border-brand/20 bg-white p-5 sm:p-6"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-[.12em] text-brand">Your next action</p>
             <h3 className="mt-2 text-lg font-semibold">{waiting ? "Waiting for private confirmation" : humanStepTitle(step.next.operation)}</h3>
@@ -383,10 +420,10 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
       {message && !error && <p role="status" className="mt-5 rounded-xl bg-brand/5 p-4 text-sm text-brand">{message}</p>}
     </section>
     <aside className={`${cardClass} h-fit p-5 sm:p-7`}><p className="text-xs font-bold uppercase tracking-[.12em] text-app-muted">Setup summary</p><h2 className="mt-2 text-lg font-semibold">Company controls</h2>
-      <dl className="mt-5 space-y-4 text-sm"><div><dt className="text-xs text-app-muted">Company administrator</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.address ?? "Not connected"}</dd></div>
-        <div className="grid grid-cols-2 gap-3"><div><dt className="text-xs text-app-muted">Monthly limit</dt><dd className="mt-1 font-semibold tabular-nums">{app.policy.value?.monthlyLimitMicro && app.policy.value.monthlyLimitMicro !== "0" ? formatUsdc(app.policy.value.monthlyLimitMicro) : monthlyLimit ? `${monthlyLimit} USDC` : "Not set"}</dd></div><div><dt className="text-xs text-app-muted">AI-agent cap</dt><dd className="mt-1 font-semibold tabular-nums">{app.policy.value?.agentCapMicro && app.policy.value.agentCapMicro !== "0" ? formatUsdc(app.policy.value.agentCapMicro) : agentCap ? `${agentCap} USDC` : "Not set"}</dd></div></div>
-        <div><dt className="text-xs text-app-muted">Company account</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.company}</dd></div></dl>
-      <div className="mt-6 rounded-xl bg-app-canvas p-4"><div className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden /><p className="text-xs leading-5 text-app-muted">Mercurii keeps this setup simple: your wallet signs, MagicBlock validates the private state, and each completed action keeps an explorer proof.</p></div></div>
+      <dl className="mt-5 space-y-4 text-sm"><div><dt className="text-xs text-app-muted">Company owner</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.address ?? "Not connected"}</dd></div>
+        <div className="grid grid-cols-2 gap-3"><div><dt className="text-xs text-app-muted">30-day company cap</dt><dd className="mt-1 font-semibold tabular-nums">{app.policy.value?.monthlyLimitMicro && app.policy.value.monthlyLimitMicro !== "0" ? formatUsdc(app.policy.value.monthlyLimitMicro) : monthlyLimit ? `${monthlyLimit} USDC` : "Not set"}</dd></div><div><dt className="text-xs text-app-muted">AI-agent payments</dt><dd className="mt-1 font-semibold tabular-nums">{app.policy.value?.agentCapMicro && app.policy.value.agentCapMicro !== "0" ? formatUsdc(app.policy.value.agentCapMicro) : agentCap ? `${agentCap} USDC` : "Off"}</dd></div></div>
+        <div><dt className="text-xs text-app-muted">Company ID</dt><dd className="mt-1 break-all font-mono text-xs">{app.session?.company}</dd></div></dl>
+      <div className="mt-6 rounded-xl bg-app-canvas p-4"><div className="flex gap-2"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand" aria-hidden /><p className="text-xs leading-5 text-app-muted">These caps control payment approval. They do not reserve funds or move USDC from your wallet.</p></div></div>
       {proofs.length > 0 && <details className="mt-6 border-t border-app-line pt-5"><summary className="cursor-pointer text-sm font-semibold text-brand focus-visible:outline-2 focus-visible:outline-brand">View setup proof history ({proofs.length})</summary>
         <p className="mt-2 text-xs leading-5 text-app-muted">Every finished step links to the correct network explorer.</p><div className="mt-3 space-y-2">{proofs.map((proof) =>
           <TxProof key={proof.signature} signature={proof.signature} label={humanStepTitle(proof.operation)} chain={proof.chain} />)}</div></details>}
