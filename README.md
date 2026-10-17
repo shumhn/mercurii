@@ -296,7 +296,7 @@ Set `MERCURY_SUPABASE_URL` and `MERCURY_SUPABASE_SECRET_KEY` in the ignored `bac
 npm run dev
 ```
 
-Open [http://localhost:3000/app](http://localhost:3000/app) for the workspace. The root command starts **two local processes**: Next.js on port `3000` and the Mercury API on `127.0.0.1:8787`. The browser calls the API through the Next.js same-origin `/api/mercurii/*` gateway. `MERCURII_WEB_PORT` changes the UI port; `MERCURII_BACKEND_URL` points a hosted frontend at its separate backend.
+Open [http://localhost:3000](http://localhost:3000) for the landing page and [http://localhost:3000/app](http://localhost:3000/app) for the workspace. The root command starts **two local processes**: Next.js on port `3000` and the Mercury API on `127.0.0.1:8787`. The browser calls the API through the Next.js same-origin `/api/mercurii/*` gateway. `MERCURII_WEB_PORT` changes the UI port; `MERCURII_BACKEND_URL` points a hosted frontend at its separate backend.
 
 Check the running API and its actual capabilities:
 
@@ -323,7 +323,7 @@ cargo test -p mercury
 
 | Path | Purpose |
 | --- | --- |
-| [`frontend/`](frontend/) | Next.js `/app` workspace, wallet connection, and same-origin API gateway. |
+| [`frontend/`](frontend/) | Next.js landing page, `/app` workspace, wallet connection, and same-origin API gateway. |
 | [`backend/`](backend/) | Company registration, TEE login, workflow endpoints, unsigned transaction builders, receipt recovery, and encrypted record access. |
 | [`programs/mercury/`](programs/mercury/) | Anchor program for private company policy, team grants, payment requests, treasury snapshot, and agent policy. |
 | [`backend/idl/mercury.json`](backend/idl/mercury.json) | Generated program interface consumed by the backend. |
