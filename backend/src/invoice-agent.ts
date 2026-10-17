@@ -161,13 +161,12 @@ export async function suggestInvoicePayment(args: {
     requestId,
     requestAddress,
     requestPlan: [
-      { phase: "base", operation: "createRequestShell", actor: agent, requestId },
-      { phase: "base", operation: "delegateRequest", actor: agent, requestId },
+      { phase: "base", operation: "prepareRequest", actor: agent, requestId },
       { phase: "ephemeral", operation: "initRequestPermission", actor: agent, request: requestAddress },
       { phase: "ephemeral", operation: "activateRequestPrivacy", actor: founder, request: requestAddress },
       { phase: "ephemeral", operation: "submitPayment", actor: agent, request: requestAddress,
         recipient: vendor.recipient, amountMicro: amountMicro.toString() },
     ],
-    nextStep: "Build, sign, and confirm requestPlan operations in order; Founder activates privacy, agent submits, then Finance separately approves and executes",
+    nextStep: "Build, sign, and confirm requestPlan operations in order; the first approval creates and routes the request, Founder activates privacy, agent submits, then Finance separately approves and executes",
   };
 }

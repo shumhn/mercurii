@@ -42,9 +42,9 @@ test("invoice Suggest maps model output to a registered recipient and never gran
   assert.equal(typeof result.requestAddress, "string");
   const requestPlan = result.requestPlan as Array<{ operation: string; actor: string }>;
   assert.deepEqual(requestPlan.map((step) => step.operation), [
-    "createRequestShell", "delegateRequest", "initRequestPermission", "activateRequestPrivacy", "submitPayment",
+    "prepareRequest", "initRequestPermission", "activateRequestPrivacy", "submitPayment",
   ]);
-  assert.equal(requestPlan[3]?.actor, founderAddress);
+  assert.equal(requestPlan[2]?.actor, founderAddress);
   assert.ok(!JSON.stringify(result).includes(invoiceText));
   assert.equal((sent.messages as Array<{ content: string }>)[1]?.content, invoiceText);
 });

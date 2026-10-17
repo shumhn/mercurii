@@ -52,7 +52,7 @@ test("guided payment flow never writes payment terms before private request acce
   const flow = { paymentId: randomUUID(), company: Keypair.generate().publicKey.toBase58(), requester,
     request: Keypair.generate().publicKey.toBase58(), requestId: "1", termsHash: "hash", createdAt: "now" };
   const cases: Array<[Partial<PaymentFlowObservation>, string | null]> = [
-    [{ exists: false }, "createRequestShell"],
+    [{ exists: false }, "prepareRequest"],
     [{ delegated: false }, "delegateRequest"],
     [{ visibleOnTee: false }, null],
     [{ permissionExists: false }, "initRequestPermission"],
@@ -69,6 +69,8 @@ test("guided payment flow never writes payment terms before private request acce
   assert.equal(nextPaymentFlowStep({ ...ready, privateReady: false }, flow, founder).actor, founder);
   assert.equal(nextPaymentFlowStep({ ...ready, status: "empty" }, flow, founder).actor, requester);
   assert.equal(nextPaymentFlowStep({ ...ready, status: "approved" }, flow, founder).status, "ready_to_execute");
+  assert.equal(nextPaymentFlowStep({ ...ready, permissionExists: false },
+    { ...flow, requester: founder }, founder).operation, "activateFounderRequest");
 });
 
 test("Manager payment ID binds the request to its branch scope", () => {

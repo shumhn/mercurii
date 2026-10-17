@@ -10,11 +10,11 @@ export function founderCompanyAddress(founderInput: unknown): string {
   ], PROGRAM_ID)[0].toBase58();
 }
 
-/** The submit route rebuilds the expected public instruction. The recent
- * blockhash can change between preparation and submission, but the instruction,
+/** The submit route rebuilds the expected public instructions. The recent
+ * blockhash can change between preparation and submission, but the instructions,
  * accounts, fee payer, and Founder signature must still be exact. Wallets may
  * inject ComputeBudget priority-fee instructions while signing; those are
- * ignored, but exactly one real instruction must remain and match the template. */
+ * ignored, while every prepared instruction must remain in order and match. */
 export function validateSignedCompanyBootstrap(input: {
   expectedTransactionBase64: string;
   signedTransactionBase64: string;
@@ -25,19 +25,22 @@ export function validateSignedCompanyBootstrap(input: {
   const signed = Transaction.from(bytes);
   const founder = asAddress(input.founder, "founder");
   const computeBudget = ComputeBudgetProgram.programId;
+  const expectedMeaningful = expected.instructions.filter((instruction) => !instruction.programId.equals(computeBudget));
   const meaningful = signed.instructions.filter((instruction) => !instruction.programId.equals(computeBudget));
-  if (expected.instructions.length !== 1 || meaningful.length !== 1 ||
+  if (expectedMeaningful.length === 0 || meaningful.length !== expectedMeaningful.length ||
       signed.feePayer?.toBase58() !== founder || signed.signatures.length !== 1 ||
       signed.signatures[0]?.publicKey.toBase58() !== founder || !signed.verifySignatures()) {
     throw new Error("Founder signature or bootstrap transaction shape is invalid");
   }
-  const actual = meaningful[0]!;
-  const template = expected.instructions[0]!;
-  if (!actual.programId.equals(template.programId) || !actual.data.equals(template.data) ||
+  const differs = meaningful.some((actual, instructionIndex) => {
+    const template = expectedMeaningful[instructionIndex]!;
+    return !actual.programId.equals(template.programId) || !actual.data.equals(template.data) ||
       actual.keys.length !== template.keys.length ||
-      actual.keys.some((key, index) => !key.pubkey.equals(template.keys[index]!.pubkey) ||
-        key.isSigner !== template.keys[index]!.isSigner ||
-        key.isWritable !== template.keys[index]!.isWritable)) {
+      actual.keys.some((key, keyIndex) => !key.pubkey.equals(template.keys[keyIndex]!.pubkey) ||
+        key.isSigner !== template.keys[keyIndex]!.isSigner ||
+        key.isWritable !== template.keys[keyIndex]!.isWritable);
+  });
+  if (differs) {
     throw new Error("Signed bootstrap does not match the Founder, Finance, and mint terms");
   }
   const signature = signed.signatures[0]!.signature;

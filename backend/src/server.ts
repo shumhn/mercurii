@@ -413,7 +413,8 @@ async function executionPlan(ctx: CompanyContext, requestAddress: string, actor:
     }
   }
   const transaction = await buildOperation({
-    operation: "executePayment", actor, request: requestAddress, grant: grantAddress,
+    operation: actor === founderAddress ? "executePaymentAndSync" : "executePayment",
+    actor, request: requestAddress, grant: grantAddress,
     treasuryToken: accounts.treasuryToken, recipientToken: accounts.recipientToken,
   }, { company: companyAddress, founder: founderAddress, teeToken: token });
   const treasuryObservation = snapshot === null ? null : {
@@ -510,7 +511,7 @@ createServer(async (req, res) => {
       const company = founderCompanyAddress(founder);
       const existing = await new Connection(BASE_RPC, "confirmed").getAccountInfo(new PublicKey(company), "confirmed");
       if (existing) return reply(res, 200, { status: "shell_exists", company });
-      const transaction = await buildOperation({ operation: "initializeCompany", actor: founder,
+      const transaction = await buildOperation({ operation: "initializeCompanyWorkspace", actor: founder,
         finance, mint: DEVNET_USDC }, { company, founder });
       return reply(res, 200, { status: "sign", company, mint: DEVNET_USDC, transaction });
     }
@@ -520,7 +521,7 @@ createServer(async (req, res) => {
       const finance = asAddress(body.finance, "finance");
       if (typeof body.signedTransactionBase64 !== "string") throw new Error("Signed bootstrap transaction is required");
       const company = founderCompanyAddress(founder);
-      const expected = await buildOperation({ operation: "initializeCompany", actor: founder,
+      const expected = await buildOperation({ operation: "initializeCompanyWorkspace", actor: founder,
         finance, mint: DEVNET_USDC }, { company, founder });
       const verified = validateSignedCompanyBootstrap({ expectedTransactionBase64: expected.transactionBase64,
         signedTransactionBase64: body.signedTransactionBase64, founder });
@@ -1669,8 +1670,17 @@ createServer(async (req, res) => {
       } else {
         if (actor !== inspected.step.actor) throw new Error(`This step requires ${inspected.step.actor}`);
         const input: Record<string, unknown> = { operation, actor };
-        if (operation === "createRequestShell" || operation === "delegateRequest") input.requestId = flow.requestId;
+        if (operation === "prepareRequest" || operation === "delegateRequest") {
+          input.requestId = flow.requestId;
+        }
         if (operation === "initRequestPermission") input.request = flow.request;
+        if (operation === "activateFounderRequest") {
+          input.request = flow.request;
+          input.includeFinance = terms.includeFinance;
+          input.manager = terms.manager;
+          input.recipient = terms.recipient;
+          input.amountMicro = terms.amountMicro;
+        }
         if (operation === "activateRequestPrivacy") {
           input.request = flow.request;
           input.includeFinance = terms.includeFinance;

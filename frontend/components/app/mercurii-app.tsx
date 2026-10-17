@@ -228,7 +228,7 @@ export function MercuriiApp() {
         setRegisterMessage("Your company already exists. Continue to set up privacy.");
       } else if (result.transaction) {
         setBootstrapStep({ company: result.company, founder, finance, transaction: result.transaction });
-        setRegisterMessage("Everything is ready. Approve the company creation in your wallet.");
+        setRegisterMessage("Everything is ready. Approve company creation and workspace preparation in your wallet.");
       }
     } catch (cause) { setRegisterError(cause instanceof Error ? cause.message : "Could not prepare your company"); }
     finally { setRegisterBusy(false); }

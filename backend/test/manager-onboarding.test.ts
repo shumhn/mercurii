@@ -40,10 +40,10 @@ test("Manager terms cannot exceed the active Finance grant", () => {
 });
 
 test("Manager limits are written only after the grant becomes private", () => {
-  assert.equal(nextManagerGrantStep({ ...ready, exists: false }).operation, "createGrantShell");
+  assert.equal(nextManagerGrantStep({ ...ready, exists: false }).operation, "prepareGrant");
   assert.equal(nextManagerGrantStep({ ...ready, delegated: false }).operation, "delegateGrant");
   assert.equal(nextManagerGrantStep({ ...ready, visibleOnTee: false }).status, "wait");
-  assert.equal(nextManagerGrantStep({ ...ready, permissionExists: false }).operation, "initGrantPermission");
+  assert.equal(nextManagerGrantStep({ ...ready, permissionExists: false }).operation, "activateChildGrant");
   assert.equal(nextManagerGrantStep({ ...ready, privateReady: false }).operation, "activateChildGrantPrivacy");
   assert.equal(nextManagerGrantStep({ ...ready, active: false }).operation, "configureGrant");
   assert.equal(nextManagerGrantStep(ready).status, "ready");

@@ -21,10 +21,10 @@ export function nextMemberGrantStep(s: {
   exists: boolean; delegated: boolean; visibleOnTee: boolean;
   permissionExists: boolean; privateReady: boolean; active: boolean;
 }): OnboardingStep {
-  if (!s.exists) return { status: "build", operation: "createGrantShell", sendTo: "base", reason: "Create member grant shell" };
+  if (!s.exists) return { status: "build", operation: "prepareGrant", sendTo: "base", reason: "Create and route the team access record with one approval" };
   if (!s.delegated) return { status: "build", operation: "delegateGrant", sendTo: "base", reason: "Delegate member grant" };
   if (!s.visibleOnTee) return { status: "wait", operation: null, sendTo: null, reason: "Wait for member grant on PER" };
-  if (!s.permissionExists) return { status: "build", operation: "initGrantPermission", sendTo: "ephemeral", reason: "Create private grant permission" };
+  if (!s.permissionExists) return { status: "build", operation: "activateMemberGrant", sendTo: "ephemeral", reason: "Protect and activate team access with one approval" };
   if (!s.privateReady) return { status: "build", operation: "activateMemberGrantPrivacy", sendTo: "ephemeral", reason: "Restrict member grant readers" };
   if (!s.active) return { status: "build", operation: "configureGrant", sendTo: "ephemeral", reason: "Activate scoped member role" };
   return { status: "ready", operation: null, sendTo: null, reason: "Member role is active" };

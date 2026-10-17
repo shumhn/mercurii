@@ -23,10 +23,10 @@ export type ManagerGrantObservation = {
 };
 
 export function nextManagerGrantStep(s: ManagerGrantObservation): OnboardingStep {
-  if (!s.exists) return { status: "build", operation: "createGrantShell", sendTo: "base", reason: "Create the Manager grant shell" };
+  if (!s.exists) return { status: "build", operation: "prepareGrant", sendTo: "base", reason: "Create and route the Manager access record with one approval" };
   if (!s.delegated) return { status: "build", operation: "delegateGrant", sendTo: "base", reason: "Delegate the grant to the company PER" };
   if (!s.visibleOnTee) return { status: "wait", operation: null, sendTo: null, reason: "Wait for the Manager grant to appear on the company PER" };
-  if (!s.permissionExists) return { status: "build", operation: "initGrantPermission", sendTo: "ephemeral", reason: "Create the grant permission" };
+  if (!s.permissionExists) return { status: "build", operation: "activateChildGrant", sendTo: "ephemeral", reason: "Protect and activate Manager access with one approval" };
   if (!s.privateReady) return { status: "build", operation: "activateChildGrantPrivacy", sendTo: "ephemeral", reason: "Restrict grant access before writing private limits and recipients" };
   if (!s.active) return { status: "build", operation: "configureGrant", sendTo: "ephemeral", reason: "Activate the Manager grant within Finance limits" };
   return { status: "ready", operation: null, sendTo: null, reason: "Scoped Manager approval access is active" };

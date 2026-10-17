@@ -68,9 +68,9 @@ function humanStepTitle(operation: string | null | undefined): string {
 function signingLabel(operation: string | null | undefined): string {
   const labels: Record<string, string> = {
     delegateCompany: "Continue in your wallet",
-    preparePrivateWorkspace: "Approve 1 of 2: prepare workspace",
+    preparePrivateWorkspace: "Approve workspace preparation",
     prepareBalanceTracker: "Approve balance setup",
-    activatePrivateWorkspace: "Approve 2 of 2: turn on privacy",
+    activatePrivateWorkspace: "Approve privacy activation",
     activateCompanyAccess: "Approve company privacy",
     activateBalanceTracker: "Approve balance privacy",
     initCompanyPermission: "Create private access rules",
@@ -377,7 +377,7 @@ export function CompanySetupPanel({ app, onComplete }: { app: MercuriiController
         <h2 className="mt-2 text-2xl font-semibold tracking-tight">Set up company privacy</h2>
         <p className="mt-2 max-w-2xl text-sm leading-6 text-app-muted">{editingLimits
           ? "One wallet approval updates the company's private spending policy."
-          : "Two wallet approvals prepare the private company workspace and its balance."}</p></div>
+          : "Compatible setup actions are grouped into the fewest wallet approvals."}</p></div>
         <span className="rounded-full bg-app-canvas px-3 py-1.5 text-xs font-semibold text-app-muted">{setupReady ? "Setup complete" : `Step ${Math.min(currentPhase + 1, SETUP_PHASES.length)} of ${SETUP_PHASES.length}`}</span></div>
 
       <ol aria-label="Private company setup progress" className="mt-7 grid gap-3 md:grid-cols-3">{SETUP_PHASES.map((phase, index) => {

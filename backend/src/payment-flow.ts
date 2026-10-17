@@ -36,7 +36,7 @@ export type PaymentFlowObservation = {
 };
 export type PaymentFlowStep = {
   status: "build" | "wait" | "approval_required" | "ready_to_execute" | "ready" | "rejected";
-  operation: "createRequestShell" | "delegateRequest" | "initRequestPermission" |
+  operation: "prepareRequest" | "delegateRequest" | "activateFounderRequest" | "initRequestPermission" |
     "activateRequestPrivacy" | "submitPayment" | "approvePayment" | null;
   actor: string | null; sendTo: "base" | "ephemeral" | null; reason: string;
 };
@@ -179,9 +179,12 @@ function status(value: number | undefined): PaymentFlowObservation["status"] {
 }
 
 export function nextPaymentFlowStep(observation: PaymentFlowObservation, flow: PaymentFlow, founder: string): PaymentFlowStep {
-  if (!observation.exists) return { status: "build", operation: "createRequestShell", actor: flow.requester, sendTo: "base", reason: "Create a public request shell without recipient or amount" };
+  if (!observation.exists) return { status: "build", operation: "prepareRequest", actor: flow.requester, sendTo: "base", reason: "Create and route the payment request with one approval" };
   if (!observation.delegated) return { status: "build", operation: "delegateRequest", actor: flow.requester, sendTo: "base", reason: "Delegate the request to the selected PER" };
   if (!observation.visibleOnTee) return { status: "wait", operation: null, actor: null, sendTo: null, reason: "Wait for the delegated request to appear on the selected PER" };
+  if (!observation.permissionExists && flow.requester === founder) {
+    return { status: "build", operation: "activateFounderRequest", actor: founder, sendTo: "ephemeral", reason: "Protect and submit the Founder request with one approval" };
+  }
   if (!observation.permissionExists) return { status: "build", operation: "initRequestPermission", actor: flow.requester, sendTo: "ephemeral", reason: "Create the request's ER-local permission" };
   if (!observation.privateReady) return { status: "build", operation: "activateRequestPrivacy", actor: founder, sendTo: "ephemeral", reason: "Restrict request access before storing recipient or amount" };
   if (observation.status === "empty") return { status: "build", operation: "submitPayment", actor: flow.requester, sendTo: "ephemeral", reason: "Write the private recipient and amount" };

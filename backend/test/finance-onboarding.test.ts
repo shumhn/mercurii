@@ -9,9 +9,9 @@ const ready: FinanceGrantObservation = {
 
 test("Finance grant setup keeps caps and recipient list private until permission activation", () => {
   const steps: Array<[keyof FinanceGrantObservation, string]> = [
-    ["exists", "createGrantShell"],
+    ["exists", "prepareGrant"],
     ["delegated", "delegateGrant"],
-    ["permissionExists", "initGrantPermission"],
+    ["permissionExists", "activateRootGrant"],
     ["privateReady", "activateRootGrantPrivacy"],
     ["active", "configureGrant"],
   ];

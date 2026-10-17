@@ -22,10 +22,10 @@ export type FinanceGrantObservation = {
 };
 
 export function nextFinanceGrantStep(s: FinanceGrantObservation): OnboardingStep {
-  if (!s.exists) return { status: "build", operation: "createGrantShell", sendTo: "base", reason: "Create a public grant shell without private caps or recipients" };
+  if (!s.exists) return { status: "build", operation: "prepareGrant", sendTo: "base", reason: "Create and route the Finance access record with one approval" };
   if (!s.delegated) return { status: "build", operation: "delegateGrant", sendTo: "base", reason: "Delegate the grant to the company PER" };
   if (!s.visibleOnTee) return { status: "wait", operation: null, sendTo: null, reason: "Wait for the grant to appear on the selected PER" };
-  if (!s.permissionExists) return { status: "build", operation: "initGrantPermission", sendTo: "ephemeral", reason: "Create the grant's ER-local permission" };
+  if (!s.permissionExists) return { status: "build", operation: "activateRootGrant", sendTo: "ephemeral", reason: "Protect and activate Finance access with one approval" };
   if (!s.privateReady) return { status: "build", operation: "activateRootGrantPrivacy", sendTo: "ephemeral", reason: "Make the grant private before writing recipients or caps" };
   if (!s.active) return { status: "build", operation: "configureGrant", sendTo: "ephemeral", reason: "Activate the Finance grant within company limits" };
   return { status: "ready", operation: null, sendTo: null, reason: "Scoped Finance access is active" };

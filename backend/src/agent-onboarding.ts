@@ -61,10 +61,10 @@ export async function inspectAgentOnboarding(args: { company: unknown; founder: 
       data?.period_cap_micro.toString() === String(periodCapMicro),
   };
   let next: Step;
-  if (!observation.exists) next = { status: "build", operation: "createAgentShell", reason: "Create the agent policy shell without private spending terms" };
+  if (!observation.exists) next = { status: "build", operation: "prepareAgent", reason: "Create and route the agent policy with one approval" };
   else if (!delegated) next = { status: "build", operation: "delegateAgent", reason: "Delegate the policy to the selected PER" };
   else if (!observation.visibleOnTee) next = { status: "wait", operation: null, reason: "Wait for delegated agent state to appear on the selected PER" };
-  else if (!observation.permissionExists) next = { status: "build", operation: "initAgentPermission", reason: "Create the agent policy permission" };
+  else if (!observation.permissionExists) next = { status: "build", operation: "activateAgentPolicy", reason: "Protect and activate the agent rules with one approval" };
   else if (!observation.privateReady) next = { status: "build", operation: "activateAgentPrivacy", reason: "Restrict policy readers before setting spending terms" };
   else if (observation.revoked) next = { status: "revoked", operation: null, reason: "This agent policy was revoked; use a different agent wallet for a new policy" };
   else if (!observation.limitsMatch) next = { status: "build", operation: "configureAgent", reason: "Set the allowed recipient and hard spending caps privately" };

@@ -61,3 +61,49 @@ test("bootstrap submit tolerates wallet-injected compute budget instructions", (
     signedTransactionBase64: sneaky.serialize().toString("base64"), founder: founder.publicKey.toBase58() }),
   /Founder signature/);
 });
+
+test("bootstrap submit accepts an exact multi-instruction setup batch", () => {
+  const founder = Keypair.generate();
+  const first = Keypair.generate().publicKey;
+  const second = Keypair.generate().publicKey;
+  const make = (reverse = false) => {
+    const tx = new Transaction({ feePayer: founder.publicKey,
+      recentBlockhash: PublicKey.default.toBase58() });
+    const instructions = [
+      SystemProgram.transfer({ fromPubkey: founder.publicKey, toPubkey: first, lamports: 1 }),
+      SystemProgram.transfer({ fromPubkey: founder.publicKey, toPubkey: second, lamports: 2 }),
+    ];
+    tx.add(...(reverse ? instructions.reverse() : instructions));
+    return tx;
+  };
+  const expected = make().serialize({ requireAllSignatures: false,
+    verifySignatures: false }).toString("base64");
+  const signed = make();
+  signed.sign(founder);
+  assert.ok(validateSignedCompanyBootstrap({ expectedTransactionBase64: expected,
+    signedTransactionBase64: signed.serialize().toString("base64"),
+    founder: founder.publicKey.toBase58() }).signature);
+  const reordered = make(true);
+  reordered.sign(founder);
+  assert.throws(() => validateSignedCompanyBootstrap({ expectedTransactionBase64: expected,
+    signedTransactionBase64: reordered.serialize().toString("base64"),
+    founder: founder.publicKey.toBase58() }), /does not match/);
+});
+
+test("bootstrap batch validation ignores prepared and wallet-added compute budget instructions", () => {
+  const founder = Keypair.generate();
+  const recipient = Keypair.generate().publicKey;
+  const make = () => {
+    const tx = transaction(founder, recipient);
+    tx.instructions.unshift(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }));
+    return tx;
+  };
+  const expected = make().serialize({ requireAllSignatures: false,
+    verifySignatures: false }).toString("base64");
+  const signed = make();
+  signed.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1_000 }));
+  signed.sign(founder);
+  assert.ok(validateSignedCompanyBootstrap({ expectedTransactionBase64: expected,
+    signedTransactionBase64: signed.serialize().toString("base64"),
+    founder: founder.publicKey.toBase58() }).signature);
+});

@@ -241,10 +241,11 @@ function aclAccounts(account: PublicKey): Record<string, PublicKey> {
 const privateOperations = new Set([
   "activatePrivateWorkspace", "activateCompanyAccess", "activateBalanceTracker",
   "initCompanyPermission", "activateCompanyPrivacy", "configureLimits",
-  "initRequestPermission", "activateRequestPrivacy", "submitPayment", "approvePayment", "rejectPayment", "executePayment",
-  "initAgentPermission", "activateAgentPrivacy", "removeFinanceAgentReader", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
+  "activateFounderRequest", "initRequestPermission", "activateRequestPrivacy", "submitPayment", "approvePayment", "rejectPayment", "executePayment", "executePaymentAndSync",
+  "activateAgentPolicy", "initAgentPermission", "activateAgentPrivacy", "removeFinanceAgentReader", "configureAgent", "fundAgentFloat", "agentPay", "revokeAgent", "reclaimAgentFloat",
   "initSnapshotPermission", "activateSnapshotPrivacy", "syncTreasurySnapshot",
   "setSnapshotReaders", "setRequestReaders", "setRequestReadersV2",
+  "activateRootGrant", "activateMemberGrant", "activateChildGrant",
   "initGrantPermission", "activateRootGrantPrivacy", "activateMemberGrantPrivacy", "activateChildGrantPrivacy", "restorePolicyReaders", "configureGrant", "revokeGrant",
 ]);
 
@@ -279,6 +280,28 @@ export async function buildOperation(input: BuildInput, config: {
       if (!company.equals(expectedCompany)) throw new Error("Configured company does not match founder policy PDA");
       tx = await program.methods.initializeCompany(pub(input.finance, "finance"), pub(input.mint, "mint"))
         .accountsPartial({ founder: actor, policy: company, systemProgram: SystemProgram.programId }).transaction();
+      break;
+    }
+    case "initializeCompanyWorkspace": {
+      if (!actor.equals(founder)) throw new Error("Only the configured founder can initialize this company");
+      const expectedCompany = PublicKey.findProgramAddressSync(
+        [Buffer.from("company-policy"), founder.toBuffer()], PROGRAM_ID,
+      )[0];
+      if (!company.equals(expectedCompany)) throw new Error("Configured company does not match founder policy PDA");
+      const snapshot = snapshotAddress(company);
+      const initialize = await program.methods.initializeCompany(pub(input.finance, "finance"), pub(input.mint, "mint"))
+        .accountsPartial({ founder: actor, policy: company, systemProgram: SystemProgram.programId }).instruction();
+      const delegatePolicy = await program.methods.delegatePolicy().accountsPartial({
+        founder: actor, policy: company, validator: TEE_VALIDATOR,
+      }).instruction();
+      const createSnapshot = await program.methods.createSnapshotShell(company).accountsPartial({
+        founder: actor, snapshot, systemProgram: SystemProgram.programId,
+      }).instruction();
+      const delegateSnapshot = await program.methods.delegateSnapshot(company).accountsPartial({
+        founder: actor, snapshot, validator: TEE_VALIDATOR,
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_400_000 }),
+        initialize, delegatePolicy, createSnapshot, delegateSnapshot);
       break;
     }
     case "createSnapshotShell": {
@@ -408,6 +431,19 @@ export async function buildOperation(input: BuildInput, config: {
       }).transaction();
       break;
     }
+    case "prepareGrant": {
+      const member = pub(input.member, "member");
+      const id = asId(input.grantId);
+      const grant = teamGrantAddress(company, actor, member, id);
+      const create = await program.methods.createGrantShell(company, member, id).accountsPartial({
+        grantor: actor, grant, systemProgram: SystemProgram.programId,
+      }).instruction();
+      const delegate = await program.methods.delegateGrant(company, member, id).accountsPartial({
+        grantor: actor, grant, validator: TEE_VALIDATOR,
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 900_000 }), create, delegate);
+      break;
+    }
     case "delegateGrant": {
       const member = pub(input.member, "member");
       const id = asId(input.grantId);
@@ -458,6 +494,44 @@ export async function buildOperation(input: BuildInput, config: {
       }).transaction();
       break;
     }
+    case "activateRootGrant":
+    case "activateMemberGrant":
+    case "activateChildGrant": {
+      const grant = pub(input.grant, "grant");
+      const parent = input.parentGrant ? pub(input.parentGrant, "parentGrant") : PROGRAM_ID;
+      if (!Array.isArray(input.recipients)) throw new Error("recipients must be an array");
+      const recipients = input.recipients.map((item) => pub(item, "recipient"));
+      const role = input.role === "finance" ? 1 : input.role === "manager" ? 2 :
+        input.role === "requester" ? 3 : input.role === "viewer" ? 4 : 0;
+      if (role === 0) throw new Error("role must be finance, manager, requester, or viewer");
+      const init = await program.methods.initGrantPermission().accountsPartial({
+        grantor: actor, grant, ...aclAccounts(grant),
+      }).instruction();
+      const protect = input.operation === "activateRootGrant"
+        ? await program.methods.activateRootGrantPrivacy().accountsPartial({
+          founder: actor, policy: company, grant, ...aclAccounts(grant),
+          policyPermission: permissionPdaFromAccount(company),
+        }).instruction()
+        : input.operation === "activateMemberGrant"
+          ? await program.methods.activateMemberGrantPrivacy().accountsPartial({
+            founder: actor, policy: company, grant, ...aclAccounts(grant),
+            policyPermission: permissionPdaFromAccount(company),
+          }).instruction()
+          : await program.methods.activateChildGrantPrivacy().accountsPartial({
+            grantor: actor, policy: company, grant, parent,
+            ...aclAccounts(grant), parentPermission: permissionPdaFromAccount(parent),
+            policyPermission: permissionPdaFromAccount(company),
+          }).instruction();
+      const configure = await program.methods.configureGrant(
+        role, input.scope ? pub(input.scope, "scope") : PublicKey.default,
+        role >= 3 ? new BN(0) : positiveMicro(input.perPaymentCapMicro),
+        role >= 3 ? new BN(0) : positiveMicro(input.periodCapMicro),
+        recipients, input.mayDelegate === true,
+      ).accountsPartial({ grantor: actor, policy: company, grant, parent }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }),
+        init, protect, configure);
+      break;
+    }
     case "configureGrant": {
       const grant = pub(input.grant, "grant");
       const parent = input.parentGrant ? pub(input.parentGrant, "parentGrant") : PROGRAM_ID;
@@ -497,6 +571,18 @@ export async function buildOperation(input: BuildInput, config: {
       tx = await program.methods.createRequestShell(company, id).accountsPartial({ request, requester: actor, systemProgram: SystemProgram.programId }).transaction();
       break;
     }
+    case "prepareRequest": {
+      const id = asId(input.requestId);
+      const request = paymentRequestAddress(company, actor, id);
+      const create = await program.methods.createRequestShell(company, id).accountsPartial({
+        request, requester: actor, systemProgram: SystemProgram.programId,
+      }).instruction();
+      const delegate = await program.methods.delegateRequest(company, id).accountsPartial({
+        request, requester: actor, validator: TEE_VALIDATOR,
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 900_000 }), create, delegate);
+      break;
+    }
     case "delegateRequest": {
       const id = asId(input.requestId);
       const request = paymentRequestAddress(company, actor, id);
@@ -516,6 +602,23 @@ export async function buildOperation(input: BuildInput, config: {
         .accountsPartial({ founder: actor, policy: company, request,
           requesterGrant: input.requesterGrant ? pub(input.requesterGrant, "requesterGrant") : PROGRAM_ID,
           ...aclAccounts(request) }).transaction();
+      break;
+    }
+    case "activateFounderRequest": {
+      if (!actor.equals(founder)) throw new Error("Only the Founder can use the combined request activation");
+      const request = pub(input.request, "request");
+      const init = await program.methods.initRequestPermission().accountsPartial({
+        requester: actor, request, ...aclAccounts(request),
+      }).instruction();
+      const protect = await program.methods.activateRequestPrivacy(
+        input.includeFinance !== false, input.manager ? pub(input.manager, "manager") : PublicKey.default,
+      ).accountsPartial({ founder: actor, policy: company, request,
+        requesterGrant: PROGRAM_ID, ...aclAccounts(request) }).instruction();
+      const submit = await program.methods.submitPayment(
+        pub(input.recipient, "recipient"), positiveMicro(input.amountMicro),
+      ).accountsPartial({ requester: actor, policy: company, request, requesterGrant: PROGRAM_ID }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
+        init, protect, submit);
       break;
     }
     case "setRequestReaders": {
@@ -559,10 +662,39 @@ export async function buildOperation(input: BuildInput, config: {
         tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
       }).transaction();
       break;
+    case "executePaymentAndSync": {
+      if (!actor.equals(founder)) throw new Error("Only the Founder can combine execution and balance sync");
+      const request = pub(input.request, "request");
+      const treasuryToken = pub(input.treasuryToken, "treasuryToken");
+      const execute = await program.methods.executePayment().accountsPartial({
+        actor, policy: company, request, grant: PROGRAM_ID,
+        treasuryToken, recipientToken: pub(input.recipientToken, "recipientToken"),
+        tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+      }).instruction();
+      const snapshot = snapshotAddress(company);
+      const sync = await program.methods.syncTreasurySnapshot().accountsPartial({
+        actor, policy: company, snapshot, grant: PROGRAM_ID, treasuryToken,
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_200_000 }),
+        execute, sync);
+      break;
+    }
     case "createAgentShell": {
       const agent = pub(input.agent, "agent");
       const agentPolicy = agentAddress(company, founder, agent);
       tx = await program.methods.createAgentShell(company, agent).accountsPartial({ founder: actor, agentPolicy, systemProgram: SystemProgram.programId }).transaction();
+      break;
+    }
+    case "prepareAgent": {
+      const agent = pub(input.agent, "agent");
+      const agentPolicy = agentAddress(company, founder, agent);
+      const create = await program.methods.createAgentShell(company, agent).accountsPartial({
+        founder: actor, agentPolicy, systemProgram: SystemProgram.programId,
+      }).instruction();
+      const delegate = await program.methods.delegateAgent(company, agent).accountsPartial({
+        founder: actor, agentPolicy, validator: TEE_VALIDATOR,
+      }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 900_000 }), create, delegate);
       break;
     }
     case "delegateAgent": {
@@ -586,6 +718,22 @@ export async function buildOperation(input: BuildInput, config: {
       tx = await program.methods.configureAgent(pub(input.recipient, "recipient"), positiveMicro(input.perPaymentCapMicro), positiveMicro(input.periodCapMicro))
         .accountsPartial({ founder: actor, agentPolicy: pub(input.agentPolicy, "agentPolicy") }).transaction();
       break;
+    case "activateAgentPolicy": {
+      const agentPolicy = pub(input.agentPolicy, "agentPolicy");
+      const init = await program.methods.initAgentPermission().accountsPartial({
+        founder: actor, agentPolicy, ...aclAccounts(agentPolicy),
+      }).instruction();
+      const protect = await program.methods.activateAgentPrivacy().accountsPartial({
+        founder: actor, policy: company, agentPolicy, ...aclAccounts(agentPolicy),
+      }).instruction();
+      const configure = await program.methods.configureAgent(
+        pub(input.recipient, "recipient"), positiveMicro(input.perPaymentCapMicro),
+        positiveMicro(input.periodCapMicro),
+      ).accountsPartial({ founder: actor, agentPolicy }).instruction();
+      tx = new Transaction().add(ComputeBudgetProgram.setComputeUnitLimit({ units: 1_000_000 }),
+        init, protect, configure);
+      break;
+    }
     case "fundAgentFloat":
     case "reclaimAgentFloat":
       tx = await program.methods[input.operation](positiveMicro(input.amountMicro)).accountsPartial({
