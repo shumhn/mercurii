@@ -1,6 +1,6 @@
 # Mercurii frontend
 
-This Next.js 16 app contains the public landing page (`/`) and the wallet-connected company workspace (`/app`). It calls the separate Mercury API through a same-origin gateway at `/api/mercurii/*`. The API URL defaults to `http://127.0.0.1:8787` in local development; a hosted frontend needs `MERCURII_BACKEND_URL`.
+This Next.js 16 app contains the wallet-connected company workspace (`/app`). The root route redirects to `/app`. It calls the separate Mercury API through a same-origin gateway at `/api/mercurii/*`. The API URL defaults to `http://127.0.0.1:8787` in local development; a hosted frontend needs `MERCURII_BACKEND_URL`.
 
 For the product story, Founder walkthrough, MagicBlock architecture, devnet proofs, and complete local setup, read the [repository README](../README.md).
 
@@ -11,4 +11,4 @@ cd frontend
 npm run dev
 ```
 
-A frontend by itself can render the landing page, but company registration, wallet login, private reads, and payment workflows require the API and its configured devnet dependencies. Run `npm run build` and `npm test` from this directory for local code checks.
+Company registration, wallet login, private reads, and payment workflows require the API and its configured devnet dependencies. Run `npm run build` and `npm test` from this directory for local code checks.
